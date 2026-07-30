@@ -2,10 +2,10 @@ import os
 import json
 import threading
 import logging
+import asyncio
 import re
 from typing import Dict, Any
 from flask import Flask
-from werkzeug.serving import run_simple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -27,22 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# 2. Web Server for Render Web Service (Fixing 404 Issue)
-# ------------------------------------------------------------------------------
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def home():
-    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!", 200
-
-def run_web_server():
-    # دریافت پورت واقعی Render (معمولاً 10000)
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting Flask Web Server on port {port}...")
-    run_simple('0.0.0.0', port, web_app)
-
-# ------------------------------------------------------------------------------
-# 3. Database Management (JSON Persistence)
+# 2. Database Management (JSON Persistence)
 # ------------------------------------------------------------------------------
 DB_FILE = "bot_database.json"
 OWNER_ID = 7474010387  # آیدی عددی مالک اصلی
@@ -84,7 +69,7 @@ BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 ) = range(6)
 
 # ------------------------------------------------------------------------------
-# 4. Helpers & Security
+# 3. Helpers & Security
 # ------------------------------------------------------------------------------
 def sanitize_text(text: str) -> str:
     if not text:
@@ -106,7 +91,7 @@ async def check_channel_membership(user_id: int, context: ContextTypes.DEFAULT_T
         return True
 
 # ------------------------------------------------------------------------------
-# 5. User Handlers
+# 4. User Handlers
 # ------------------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -262,7 +247,7 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ خطا در ارسال فایل. دوباره تلاش کنید.")
 
 # ------------------------------------------------------------------------------
-# 6. Admin Panel Functions
+# 5. Admin Panel Functions
 # ------------------------------------------------------------------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -283,7 +268,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# --- افزودن فیلم ---
 async def admin_start_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -345,7 +329,6 @@ async def admin_get_qualities(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("❌ فرمت نامعتبر!")
     return QUALITIES
 
-# --- حذف فیلم ---
 async def admin_delete_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -381,7 +364,6 @@ async def admin_delete_movie_callback(update: Update, context: ContextTypes.DEFA
     else:
         await query.edit_message_text("❌ این فیلم قبلاً حذف شده است.")
 
-# --- مدیریت ادمین‌ها ---
 async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -441,7 +423,6 @@ async def handle_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
         save_db(DB)
         await query.edit_message_text(f"✅ ادمین `{target_id}` با موفقیت حذف شد.", parse_mode="Markdown")
 
-# --- تنظیم کانال جوین اجباری ---
 async def start_set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -476,13 +457,20 @@ async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ------------------------------------------------------------------------------
-# 7. Main Function
+# 6. Web Server & Async Telegram Bot Runner
 # ------------------------------------------------------------------------------
-def main():
-    # شروع وب‌سرور در یک Thread جداگانه
-    threading.Thread(target=run_web_server, daemon=True).start()
+app = Flask(__name__)
 
-    app = Application.builder().token(BOT_TOKEN).build()
+@app.route('/')
+def home():
+    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!", 200
+
+def run_telegram_bot():
+    """اجرای ربات تلگرام در یک Event Loop جداگانه در پس‌زمینه"""
+    loop = asyncio.new_event_policy().new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    bot_app = Application.builder().token(BOT_TOKEN).build()
 
     # Conversation Handlers
     movie_conv = ConversationHandler(
@@ -508,31 +496,37 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_flow)]
     )
 
-    # Register Handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(movie_conv)
-    app.add_handler(admin_conv)
-    app.add_handler(channel_conv)
+    # Handlers
+    bot_app.add_handler(CommandHandler("start", start_command))
+    bot_app.add_handler(movie_conv)
+    bot_app.add_handler(admin_conv)
+    bot_app.add_handler(channel_conv)
 
-    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
-    app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
-    app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
-    app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
+    bot_app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
+    bot_app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
+    bot_app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
+    bot_app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
     
-    app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
-    app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
-    app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
-    app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
+    bot_app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
+    bot_app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
+    bot_app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
+    bot_app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
     
-    app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
-    app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
-    app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
-    app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
-    app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
+    bot_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    bot_app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
+    bot_app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
+    bot_app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
+    bot_app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
+    bot_app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
 
-    print("Movie Bot is running...")
-    app.run_polling()
+    logger.info("Initializing Telegram Bot Polling...")
+    bot_app.run_polling(close_loop=False)
 
+# روشن کردن ربات تلگرام در پس‌زمینه
+t = threading.Thread(target=run_telegram_bot, daemon=True)
+t.start()
+
+# این بخش اصلی پروژه برای اجرای وب‌سرور Flask روی پورت Render است
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
