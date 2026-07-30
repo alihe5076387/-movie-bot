@@ -1,4 +1,7 @@
 import logging
+import asyncio
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -6,29 +9,32 @@ from telegram.ext import (
 )
 
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
+ADMIN_IDS = [7474010387]
 
-# 🎯 آیدی تلگرام خودت و دوستت را اینجا بگذار (آیدی عددی)
-ADMIN_IDS = [7474010387]  # آیدی عددی شما از خروجی قبلی
-
-# دیتابیس ساده برای ذخیره فیلم‌ها در حافظه
-# فرمت: {'movie_id': {'title': 'نام فیلم', 'file_id': 'کد ویدیو'}}
 MOVIES_DB = {}
-
-# مراحل دریافت فیلم جدید
 GET_TITLE, GET_VIDEO = range(2)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# دستور /start
+# --- وب سرور ساختگی برای تایید Health Check در Render ---
+class DummyServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    server = HTTPServer(('0.0.0.0', 10000), DummyServer)
+    server.serve_forever()
+
+# --- بخش اصلی ربات ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     keyboard = []
 
-    # ساخت دکمه‌ها برای فیلم‌های موجود
     for m_id, m_data in MOVIES_DB.items():
         keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"show_{m_id}")])
 
-    # اگر کاربر ادمین باشد، دکمه پنل مدیریت را هم می‌بیند
     if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت (ویژه ادمین)", callback_data='admin_panel')])
 
@@ -40,7 +46,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=reply_markup)
 
-# نمایش فیلم انتخاب شده
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -58,9 +63,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     elif query.data == 'admin_panel':
         keyboard = [[InlineKeyboardButton("➕ افزودن فیلم جدید", callback_data='add_movie')]]
-        await query.message.reply_text("welcome به پنل مدیریت! یک گزینه را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.reply_text("به پنل مدیریت خوش آمدید! یک گزینه را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# شروع فرآیند افزودن فیلم (ادمین)
 async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -70,13 +74,11 @@ async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text("لطفاً **عنوان/اسم فیلم** را ارسال کنید:")
     return GET_TITLE
 
-# دریافت اسم فیلم
 async def get_movie_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['temp_title'] = update.message.text
     await update.message.reply_text("عالی! حالا **خود ویدیو/فایل فیلم** را در چت بفرستید:")
     return GET_VIDEO
 
-# دریافت ویدیو و ذخیره آن
 async def get_movie_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_file_id = update.message.video.file_id
     title = context.user_data['temp_title']
@@ -87,15 +89,16 @@ async def get_movie_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ فیلم **{title}** با موفقیت به ربات اضافه شد!")
     return ConversationHandler.END
 
-# انصراف از ساخت
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("عملیات لغو شد.")
     return ConversationHandler.END
 
 if __name__ == '__main__':
+    # اجرا کردن وب سرور در یک Thread جداگانه
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # گفتگوی افزودن فیلم
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_movie, pattern='^add_movie$')],
         states={
