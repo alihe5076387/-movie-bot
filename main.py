@@ -1,8 +1,9 @@
 import os
+import json
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, filters, ContextTypes
@@ -12,10 +13,10 @@ OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
 ADMIN_IDS = {OWNER_ID}
-MOVIES_DB = {}
 USERS_FILE = "users.txt"
+MOVIES_FILE = "movies.json"
 
-# مدیریت ذخیره دائمی کاربران
+# --- ذخیره‌سازی دائمی کاربران ---
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -29,10 +30,24 @@ def save_user(user_id):
         with open(USERS_FILE, "a") as f:
             f.write(f"{user_id}\n")
 
-USERS_DB = load_users()
+# --- ذخیره‌سازی دائمی فیلم‌ها ---
+def load_movies():
+    if os.path.exists(MOVIES_FILE):
+        try:
+            with open(MOVIES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_movies(movies_db):
+    with open(MOVIES_FILE, "w", encoding="utf-8") as f:
+        json.dump(movies_db, f, ensure_ascii=False, indent=4)
+
+MOVIES_DB = load_movies()
 
 (GET_TITLE, GET_VIDEO, GET_NEW_ADMIN, 
- REMOVE_ADMIN, DELETE_MOVIE, BROADCAST_MSG) = range(6)
+ REMOVE_ADMIN, DELETE_MOVIE, BROADCAST_MSG, SEARCH_MOVIE) = range(7)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -53,29 +68,49 @@ async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     except Exception:
         pass
 
+# تنظیم دستورات منو
+async def post_init(application):
+    commands = [
+        BotCommand("start", "🏠 منوی اصلی و لیست فیلم‌ها"),
+        BotCommand("search", "🔍 جستجوی سریع فیلم")
+    ]
+    await application.bot.set_my_commands(commands)
+
 # --- منوی اصلی ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     save_user(user_id)
     
-    # پاک کردن پیام /start کاربر برای خلوت شدن چت
     if update.message:
         await safe_delete(context, update.message.chat_id, update.message.message_id)
     
     keyboard = []
+    # افزودن فیلم‌ها
     for m_id, m_data in MOVIES_DB.items():
-        keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"show_{m_id}")])
+        views = m_data.get('views', 0)
+        keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']} ({views} بازدید)", callback_data=f"show_{m_id}")])
+
+    # دکمه‌های کاربردی
+    user_tools = [
+        InlineKeyboardButton("🔍 جستجوی فیلم", callback_data='search_btn'),
+        InlineKeyboardButton("🔥 محبوب‌ترین‌ها", callback_data='top_movies')
+    ]
+    keyboard.append(user_tools)
 
     if user_id in ADMIN_IDS:
         keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت پیشرفته", callback_data='admin_panel')])
 
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    msg = "سلام! به ربات اختصاصی فیلم خوش آمدید.\nلطفاً فیلم مورد نظر خود را انتخاب کنید:" if MOVIES_DB else "سلام! هنوز هیچ فیلمی اضافه نشده است."
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 جستجوی فیلم", callback_data='search_btn')],
+        [InlineKeyboardButton("⚙️ پنل مدیریت پیشرفته", callback_data='admin_panel')] if user_id in ADMIN_IDS else []
+    ])
+    
+    msg = "🍿 **به آرشیو اختصاصی فیلم خوش آمدید!**\n\nاز لیست زیر فیلم مورد نظر خود را انتخاب کنید یا از دکمه جستجو استفاده کنید:" if MOVIES_DB else "سلام! هنوز هیچ فیلمی در آرشیو اضافه نشده است."
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=reply_markup)
+        await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=reply_markup, parse_mode='Markdown')
         
     return ConversationHandler.END
 
@@ -89,14 +124,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m_id = query.data.replace('show_', '')
         movie = MOVIES_DB.get(m_id)
         if movie:
+            # افزایش آمار بازدید
+            movie['views'] = movie.get('views', 0) + 1
+            save_movies(MOVIES_DB)
+            
             await context.bot.send_video(
                 chat_id=query.message.chat_id,
                 video=movie['file_id'],
-                caption=f"🎥 **{movie['title']}**\n\n⚠️ *این فایل قفل بوده و قابلیت دانلود یا فوروارد ندارد.*",
+                caption=f"🎥 **{movie['title']}**\n👁 تعداد بازدید: {movie['views']}\n\n⚠️ *این فایل قفل بوده و قابلیت دانلود یا فوروارد ندارد.*",
                 parse_mode='Markdown',
                 protect_content=True
             )
+
+    elif query.data == 'top_movies':
+        sorted_movies = sorted(MOVIES_DB.items(), key=lambda x: x[1].get('views', 0), reverse=True)[:5]
+        if not sorted_movies:
+            await query.edit_message_text("هنوز فیلمی ثبت نشده است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='back_home')]]))
+            return
             
+        text = "🔥 **پربازدیدترین فیلم‌های آرشیو:**\n\n"
+        keyboard = []
+        for m_id, m_data in sorted_movies:
+            text += f"⭐ {m_data['title']} - {m_data.get('views', 0)} بازدید\n"
+            keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"show_{m_id}")])
+            
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data='back_home')])
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == 'back_home':
+        await start(update, context)
+
     elif query.data == 'admin_panel':
         if user_id not in ADMIN_IDS:
             return
@@ -107,10 +164,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👤 افزودن ادمین", callback_data='add_admin'),
              InlineKeyboardButton("🗑 حذف ادمین", callback_data='rem_admin')],
             [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data='broadcast')],
-            [InlineKeyboardButton("📊 آمار ربات", callback_data='stats')]
+            [InlineKeyboardButton("📊 آمار کامل ربات", callback_data='stats')],
+            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data='back_home')]
         ]
         await query.edit_message_text(
-            "🛠 **پنل مدیریت پیشرفته**\nلطفاً یک گزینه را انتخاب کنید:", 
+            "🛠 **پنل مدیریت پیشرفته سوپربات**\nلطفاً یک گزینه را انتخاب کنید:", 
             reply_markup=InlineKeyboardMarkup(keyboard), 
             parse_mode='Markdown'
         )
@@ -119,10 +177,45 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'stats':
         if user_id in ADMIN_IDS:
             users_count = len(load_users())
-            text = f"📊 **آمار کل ربات:**\n\n👥 تعداد کاربران: {users_count}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
+            total_views = sum(m.get('views', 0) for m in MOVIES_DB.values())
+            text = f"📊 **آمار جامع سوپربات:**\n\n👥 تعداد کاربران: {users_count}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👁 مجموع کل بازدیدها: {total_views}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
             keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
             await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
+
+# --- جستجوی فیلم ---
+async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='back_home')]]
+        await query.edit_message_text("🔍 لطفاً **قسمتی از نام فیلم** مورد نظر را تایپ و ارسال کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='back_home')]]
+        await update.message.reply_text("🔍 لطفاً **قسمتی از نام فیلم** مورد نظر را تایپ و ارسال کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return SEARCH_MOVIE
+
+async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
+    search_query = update.message.text.lower().strip()
+    
+    results = []
+    for m_id, m_data in MOVIES_DB.items():
+        if search_query in m_data['title'].lower():
+            results.append((m_id, m_data))
+            
+    if results:
+        keyboard = []
+        text = f"🔎 نتايج جستجو برای «{search_query}»:\n"
+        for m_id, m_data in results:
+            keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"show_{m_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data='back_home')])
+        await context.bot.send_message(chat_id=update.message.chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data='back_home')]]
+        await context.bot.send_message(chat_id=update.message.chat_id, text="❌ هیچ فیلمی با این نام پیدا نشد.", reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    return ConversationHandler.END
 
 # --- بخش افزودن فیلم ---
 async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,12 +245,14 @@ async def get_movie_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_file_id = update.message.video.file_id
     title = context.user_data['temp_title']
     movie_id = str(len(MOVIES_DB) + 1)
-    MOVIES_DB[movie_id] = {'title': title, 'file_id': video_file_id}
+    
+    MOVIES_DB[movie_id] = {'title': title, 'file_id': video_file_id, 'views': 0}
+    save_movies(MOVIES_DB)
     
     keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
     await context.bot.send_message(
         chat_id=update.message.chat_id,
-        text=f"✅ فیلم **{title}** با موفقیت اضافه شد!",
+        text=f"✅ فیلم **{title}** با موفقیت ذخیره و به آرشیو اضافه شد!",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ConversationHandler.END
@@ -186,6 +281,7 @@ async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if m_id in MOVIES_DB:
         deleted = MOVIES_DB.pop(m_id)
+        save_movies(MOVIES_DB)
         msg = f"✅ فیلم **{deleted['title']}** حذف شد."
     else:
         msg = "❌ کدی که فرستادید معتبر نیست."
@@ -193,7 +289,7 @@ async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.message.chat_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
-# --- بخش مدیریت ادمین‌ها ---
+# --- مدیریت ادمین‌ها ---
 async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -258,9 +354,7 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BROADCAST_MSG
 
 async def process_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # پاک کردن پیام متنی ادمین
     await safe_delete(context, update.message.chat_id, update.message.message_id)
-    
     msg_text = update.message.text
     users = load_users()
     count = 0
@@ -285,7 +379,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -293,7 +387,9 @@ if __name__ == '__main__':
             CallbackQueryHandler(start_del_movie, pattern='^del_movie$'),
             CallbackQueryHandler(start_add_admin, pattern='^add_admin$'),
             CallbackQueryHandler(start_rem_admin, pattern='^rem_admin$'),
-            CallbackQueryHandler(start_broadcast, pattern='^broadcast$')
+            CallbackQueryHandler(start_broadcast, pattern='^broadcast$'),
+            CallbackQueryHandler(start_search, pattern='^search_btn$'),
+            CommandHandler('search', start_search)
         ],
         states={
             GET_TITLE: [
@@ -318,6 +414,10 @@ if __name__ == '__main__':
             ],
             BROADCAST_MSG: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast),
+                CallbackQueryHandler(handle_callback)
+            ],
+            SEARCH_MOVIE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_search),
                 CallbackQueryHandler(handle_callback)
             ]
         },
