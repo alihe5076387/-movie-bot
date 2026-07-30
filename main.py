@@ -1,473 +1,495 @@
-import logging
-import json
 import os
-import time
-from threading import Thread
+import json
+import threading
+import logging
+import re
+from typing import Dict, Any
 from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
 )
 
-# ---------------- وب‌سرور برای نگه داشتن ربات در Render ----------------
-app_web = Flask('')
-
-@app_web.route('/')
-def home():
-    return "Bot is alive and secure!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app_web.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
-
-# ---------------- تنظیمات امنیتی و اصلی ----------------
-# دریافت توکن و آیدی ادمین از متغیرهای محیطی یا مقادیر پیش‌فرض
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 7474072387))
-
-DATA_FILE = "settings.json"
-
-# پسوندهای خطرناک ممنوعه برای جلوگیری از ورود ویروس
-DANGEROUS_EXTENSIONS = [
-    '.exe', '.bat', '.cmd', '.sh', '.php', '.pl', '.cgi', 
-    '.js', '.vbs', '.py', '.scr', '.pif', '.application', '.gadget'
-]
-
-# سیستم آنتی اسپم (حافظه موقت زمان ارسال پیام کاربران)
-USER_LAST_MESSAGE_TIME = {}
-SPAM_THRESHOLD = 1.2  # حداقل فاصله زمانی بین دو پیام (ثانیه)
-
+# ------------------------------------------------------------------------------
+# 1. Logging Configuration
+# ------------------------------------------------------------------------------
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# ---------------- مدیریت دیتابیس ----------------
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        default_data = {
-            "force_join_enabled": True,
-            "channels": [],
-            "tickets": {},
-            "ticket_counter": 1,
-            "movies": {},
-            "users": []  # ذخیره آیدی تمام کاربران برای ارسال همگانی
-        }
-        save_data(default_data)
-        return default_data
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        if "tickets" not in data: data["tickets"] = {}
-        if "ticket_counter" not in data: data["ticket_counter"] = 1
-        if "movies" not in data: data["movies"] = {}
-        if "users" not in data: data["users"] = []
-        return data
+# ------------------------------------------------------------------------------
+# 2. Dummy Web Server for Render Free Tier (Web Service)
+# ------------------------------------------------------------------------------
+web_app = Flask(__name__)
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+@web_app.route('/')
+def home():
+    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!"
 
-def register_user(user_id: int):
-    data = load_data()
-    if user_id not in data["users"]:
-        data["users"].append(user_id)
-        save_data(data)
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
 
-# ---------------- بررسی آنتی‌اسپم ----------------
-def is_spamming(user_id: int) -> bool:
-    current_time = time.time()
-    last_time = USER_LAST_MESSAGE_TIME.get(user_id, 0)
-    USER_LAST_MESSAGE_TIME[user_id] = current_time
-    return (current_time - last_time) < SPAM_THRESHOLD
+# ------------------------------------------------------------------------------
+# 3. Database Management (JSON Persistence)
+# ------------------------------------------------------------------------------
+DB_FILE = "bot_database.json"
+OWNER_ID = 7474010387  # آیدی عددی مالک اصلی
 
-# ---------------- بررسی قفل کانال‌ها ----------------
-async def check_user_subscriptions(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    data = load_data()
-    if not data.get("force_join_enabled", True):
-        return True, []
+DEFAULT_DATA = {
+    "admins": [OWNER_ID],
+    "required_channel": "",  # آیدی کانال جوین اجباری (مثلا @mychannel)
+    "movie_counter": 1,
+    "movies": {}
+}
 
-    not_joined = []
-    for channel in data.get("channels", []):
-        try:
-            member = await context.bot.get_chat_member(chat_id=f"@{channel}", user_id=user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                not_joined.append(channel)
-        except Exception:
-            not_joined.append(channel)
+def load_db():
+    if not os.path.exists(DB_FILE):
+        save_db(DEFAULT_DATA)
+        return DEFAULT_DATA
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # تبدیل کلیدهای دیکشنری فیلم به int
+            data["movies"] = {int(k): v for k, v in data.get("movies", {}).items()}
+            return data
+    except Exception as e:
+        logger.error(f"Error loading DB: {e}")
+        return DEFAULT_DATA
 
-    return (len(not_joined) == 0), not_joined
+def save_db(data):
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving DB: {e}")
 
-async def show_force_join_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, not_joined_channels: list):
-    keyboard = []
-    for ch in not_joined_channels:
-        keyboard.append([InlineKeyboardButton(f"📢 عضویت در کانال @{ch}", url=f"https://t.me/{ch}")])
-    
-    keyboard.append([InlineKeyboardButton("✅ عضو شدم / بررسی مجدد", callback_data="check_join_again")])
-    text = "❤️ **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**"
-    
-    if update.message:
-        await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+DB = load_db()
+BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
-# ---------------- کیبورد اصلی ----------------
-def get_main_keyboard(user_id: int):
-    keyboard = [
-        [KeyboardButton("📜 مشاهده لیست فیلم‌ها"), KeyboardButton("🔍 جستجوی فیلم")],
-        [KeyboardButton("📞 پشتیبانی / ارسال تیکت")]
-    ]
-    if user_id == ADMIN_ID:
-        keyboard.append([KeyboardButton("⚙️ پنل مدیریت")])
-        
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+# States
+(
+    TITLE, SYNOPSIS, TEASER, QUALITIES, 
+    ADD_ADMIN_ID, SET_CHANNEL_USERNAME
+) = range(6)
 
-# ---------------- دستور /start ----------------
+# ------------------------------------------------------------------------------
+# 4. Helpers & Security
+# ------------------------------------------------------------------------------
+def sanitize_text(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r'[<>]', '', text).strip()
+
+def is_admin(user_id: int) -> bool:
+    return user_id in DB.get("admins", [OWNER_ID])
+
+async def check_channel_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    channel = DB.get("required_channel", "")
+    if not channel:
+        return True
+    try:
+        member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
+        return member.status in ["creator", "administrator", "member"]
+    except Exception as e:
+        logger.error(f"Channel Check Error: {e}")
+        return True # در صورت بروز خطا برای عدم مسدودی کاربر
+
+# ------------------------------------------------------------------------------
+# 5. User Handlers
+# ------------------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    register_user(user_id)
-
-    if is_spamming(user_id):
+    user = update.effective_user
+    
+    # بررسی جوین اجباری
+    if not is_admin(user.id) and not await check_channel_membership(user.id, context):
+        channel = DB["required_channel"]
+        keyboard = [
+            [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{channel.replace('@', '')}")],
+            [InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join")]
+        ]
+        msg = f"⚠️ کاربر گرامی، برای استفاده از ربات لطفاً ابتدا در کانال زیر عضو شوید:\n\n👉 {channel}"
+        if update.message:
+            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        elif update.callback_query:
+            await update.callback_query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    is_joined, not_joined = await check_user_subscriptions(context, user_id)
-    if not is_joined:
-        await show_force_join_msg(update, context, not_joined)
+    welcome_msg = (
+        f"سلام {user.first_name} عزیز! 👋\n\n"
+        "به ربات تخصصی دانلود و تماشای فیلم خوش آمدید.\n"
+        "جهت مشاهده فهرست یا استفاده از امکانات، از دکمه‌های زیر استفاده کنید:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🎬 لیست فیلم‌ها", callback_data="list_movies")],
+        [InlineKeyboardButton("ℹ️ راهنما", callback_data="help_info")]
+    ]
+    
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت کامل", callback_data="admin_panel")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.message:
+        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
+
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if await check_channel_membership(query.from_user.id, context):
+        await query.message.reply_text("✅ عضویت شما تأیید شد!")
+        await start_command(update, context)
+    else:
+        await query.answer("❌ شما هنوز در کانال عضو نشده‌اید!", show_alert=True)
+
+async def help_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    help_text = (
+        "ℹ️ **راهنمای استفاده از ربات:**\n\n"
+        "1. از بخش 'لیست فیلم‌ها' فیلم مورد نظر خود را انتخاب کنید.\n"
+        "2. خلاصه داستان و تیزر را مشاهده کنید.\n"
+        "3. کیفیت دلخواه را جهت دانلود انتخاب کنید."
+    )
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main")]]
+    await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def list_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    movies = DB.get("movies", {})
+    if not movies:
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main")]]
+        await query.edit_message_text("هنوز هیچ فیلمی ثبت نشده است.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    reply_markup = get_main_keyboard(user_id)
-    await update.message.reply_text(
-        "🎬 **به آرشیو رایگان فیلم خوش آمدید!**\nاز کیبورد پایین گزینه مورد نظر را انتخاب کنید:",
-        reply_markup=reply_markup,
+    keyboard = []
+    for m_id, m_data in movies.items():
+        keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"movie_{m_id}")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main")])
+
+    await query.edit_message_text(
+        "📋 **فهرست فیلم‌های موجود:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
-# ---------------- پنل مدیریت ارتقایافته ----------------
-async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+async def show_movie_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    movie_id = int(query.data.split("_")[1])
+    movie = DB["movies"].get(movie_id)
+
+    if not movie:
+        await query.edit_message_text("❌ فیلم یافت نشد.")
         return
 
-    data = load_data()
-    status_str = "🟢 فعال" if data.get("force_join_enabled", True) else "🔴 غیرفعال"
-    channels_list = "\n".join([f"• @{ch}" for ch in data.get("channels", [])]) or "هیچ کانالی ثبت نشده"
-    
-    open_tickets = [t for t in data["tickets"].values() if t["status"] == "open"]
-    ticket_count = len(open_tickets)
-    user_count = len(data.get("users", []))
-    movie_count = len(data.get("movies", {}))
+    caption = f"🎬 **{movie['title']}**\n\n📝 **خلاصه داستان:**\n{movie['synopsis']}\n"
+    keyboard = []
+    q_buttons = []
+    for q_name in movie.get("qualities", {}).keys():
+        q_buttons.append(InlineKeyboardButton(f"📥 {q_name}", callback_data=f"dl_{movie_id}_{q_name}"))
+    if q_buttons:
+        keyboard.append(q_buttons)
 
-    text = (
-        f"⚙️ **پنل مدیریت پیشرفته و امن**\n\n"
-        f"📊 **آمار کل:**\n"
-        f"• تعداد کاربران: **{user_count} نفر**\n"
-        f"• تعداد فیلم‌ها: **{movie_count} عدد**\n"
-        f"• تیکت‌های باز: **{ticket_count} عدد**\n\n"
-        f"🔒 وضعیت قفل عضویت: **{status_str}**\n\n"
-        f"📋 **کانال‌های قفل:**\n{channels_list}"
-    )
+    if movie.get("teaser_file_id"):
+        keyboard.append([InlineKeyboardButton("🎥 تماشای تیزر", callback_data=f"teaser_{movie_id}")])
 
-    toggle_btn_text = "🔴 غیرفعال‌سازی قفل" if data.get("force_join_enabled", True) else "🟢 فعال‌سازی قفل"
+    # اگر ادمین بود دکمه حذف هم داشته باشه
+    if is_admin(query.from_user.id):
+        keyboard.append([InlineKeyboardButton("🗑 حذف این فیلم (مدیریت)", callback_data=f"delmovie_{movie_id}")])
+
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="list_movies")])
+
+    await query.edit_message_text(text=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def send_teaser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    movie_id = int(query.data.split("_")[1])
+    movie = DB["movies"].get(movie_id)
+    if movie and movie.get("teaser_file_id"):
+        await query.message.reply_video(video=movie["teaser_file_id"], caption=f"🎥 تیزر: **{movie['title']}**", parse_mode="Markdown")
+
+async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    movie_id, q_name = int(parts[1]), parts[2]
+    movie = DB["movies"].get(movie_id)
     
+    if not movie or q_name not in movie.get("qualities", {}):
+        await query.message.reply_text("❌ کیفیت نامعتبر است.")
+        return
+
+    file_ref = movie["qualities"][q_name]
+    if file_ref.startswith("http"):
+        await query.message.reply_text(f"🔗 **لینک دانلود ({q_name}):**\n{file_ref}", parse_mode="Markdown")
+    else:
+        await query.message.reply_video(video=file_ref, caption=f"🎬 {movie['title']} - {q_name}")
+
+# ------------------------------------------------------------------------------
+# 6. Admin Panel Functions
+# ------------------------------------------------------------------------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ دسترسی غیرمجاز!", show_alert=True)
+        return
+    await query.answer()
+
+    channel_status = DB.get("required_channel") or "غیرفعال"
+    text = f"⚙️ **پنل مدیریت ربات**\n\n📢 **کانال جوین اجباری فعلی:** {channel_status}\n👥 **تعداد ادمین‌ها:** {len(DB['admins'])}"
+
     keyboard = [
         [InlineKeyboardButton("➕ افزودن فیلم جدید", callback_data="admin_add_movie")],
-        [InlineKeyboardButton(f"📩 مشاهده تیکت‌ها ({ticket_count})", callback_data="admin_view_tickets")],
-        [InlineKeyboardButton("📢 ارسال پیام همگانی (Broadcast)", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(toggle_btn_text, callback_data="admin_toggle_lock")],
-        [InlineKeyboardButton("➕ افزودن کانال", callback_data="admin_add_channel"),
-         InlineKeyboardButton("➖ حذف کانال", callback_data="admin_del_channel")]
+        [InlineKeyboardButton("🗑 حذف فیلم", callback_data="admin_delete_movie_list")],
+        [InlineKeyboardButton("👥 مدیریت ادمین‌ها", callback_data="admin_manage_admins")],
+        [InlineKeyboardButton("📢 تنظیم کانال جوین اجباری", callback_data="admin_set_channel")],
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main")]
     ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# --- افزودن فیلم ---
+async def admin_start_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query:
-        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await query.answer()
+    await query.edit_message_text("✏️ **عنوان فیلم را وارد کنید:**")
+    return TITLE
+
+async def admin_get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = sanitize_text(update.message.text)
+    context.user_data["new_movie"] = {"title": title, "qualities": {}}
+    await update.message.reply_text("📝 **خلاصه داستان فیلم را وارد کنید:**")
+    return SYNOPSIS
+
+async def admin_get_synopsis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_movie"]["synopsis"] = sanitize_text(update.message.text)
+    await update.message.reply_text("🎥 **فایل ویدیو تیزر را ارسال کنید** یا کلمه `skip` را بنویسید:", parse_mode="Markdown")
+    return TEASER
+
+async def admin_get_teaser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.video:
+        context.user_data["new_movie"]["teaser_file_id"] = update.message.video.file_id
     else:
-        await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        context.user_data["new_movie"]["teaser_file_id"] = None
 
-# ---------------- پردازش پیام‌های متنی و امنیت فایل ----------------
-async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    register_user(user_id)
+    await update.message.reply_text(
+        "📥 **کیفیت‌ها را وارد کنید:**\nمثال: `1080p = لینک` یا ویدیو بفرستید و کپشن کیفیت بگذارید.\nدر پایان کلمه `done` را بفرستید.",
+        parse_mode="Markdown"
+    )
+    return QUALITIES
 
-    # سیستم آنتی اسپم
-    if is_spamming(user_id):
-        await update.message.reply_text("⚠️ **لطفاً کمی آرام‌تر پیام بفرستید!** (جلوگیری از اسپم)")
-        return
-
-    text = update.message.text.strip() if update.message.text else ""
-    user_data = context.user_data
-
-    # بررسی قفل کانال‌ها
-    is_joined, not_joined = await check_user_subscriptions(context, user_id)
-    if not is_joined:
-        await show_force_join_msg(update, context, not_joined)
-        return
-
-    # ۱. دریافت پیام تیکت
-    if user_data.get("state") == "waiting_for_ticket":
-        config_data = load_data()
-        t_id = str(config_data["ticket_counter"])
-        config_data["ticket_counter"] += 1
+async def admin_get_qualities(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text if update.message.text else ""
+    if text.lower() == "done":
+        movie_data = context.user_data.get("new_movie")
+        if not movie_data.get("qualities"):
+            await update.message.reply_text("⚠️ حداقل یک کیفیت ثبت کنید!")
+            return QUALITIES
         
-        user_name = update.effective_user.first_name or "کاربر"
-        config_data["tickets"][t_id] = {
-            "user_id": user_id,
-            "user_name": user_name,
-            "text": text,
-            "status": "open"
-        }
-        save_data(config_data)
-        user_data["state"] = None
+        m_id = DB["movie_counter"]
+        DB["movies"][m_id] = movie_data
+        DB["movie_counter"] += 1
+        save_db(DB)
         
-        await update.message.reply_text(f"✅ **تیکت شما با موفقیت ثبت شد (کد تیکت: #{t_id})**", parse_mode="Markdown")
-        try:
-            await context.bot.send_message(ADMIN_ID, f"📩 **تیکت جدید (#{t_id})**\nاز طرف: {user_name}\nمتن: {text}")
-        except Exception: pass
-        return
+        await update.message.reply_text(f"✅ فیلم **{movie_data['title']}** ثبت شد!", parse_mode="Markdown")
+        return ConversationHandler.END
 
-    # ۲. پاسخ ادمین به تیکت
-    if user_id == ADMIN_ID and user_data.get("state") == "answering_ticket":
-        target_ticket_id = user_data.get("target_ticket_id")
-        config_data = load_data()
-        ticket = config_data["tickets"].get(target_ticket_id)
+    if update.message.video and update.message.caption:
+        q_name = sanitize_text(update.message.caption)
+        context.user_data["new_movie"]["qualities"][q_name] = update.message.video.file_id
+        await update.message.reply_text(f"✅ کیفیت `{q_name}` ثبت شد. بعدی یا `done`؟", parse_mode="Markdown")
+        return QUALITIES
 
-        if ticket and ticket["status"] == "open":
-            ticket["status"] = "closed"
-            save_data(config_data)
-            try:
-                await context.bot.send_message(ticket["user_id"], f"📩 **پاسخ پشتیبانی به تیکت #{target_ticket_id}:**\n\n{text}", parse_mode="Markdown")
-                await update.message.reply_text(f"✅ پاسخ ارسال شد و تیکت #{target_ticket_id} بسته شد.")
-            except Exception as e:
-                await update.message.reply_text(f"❌ خطا در ارسال: {e}")
+    if "=" in text:
+        parts = text.split("=", 1)
+        q_name, ref = sanitize_text(parts[0]), parts[1].strip()
+        context.user_data["new_movie"]["qualities"][q_name] = ref
+        await update.message.reply_text(f"✅ کیفیت `{q_name}` ثبت شد. بعدی یا `done`؟", parse_mode="Markdown")
+        return QUALITIES
 
-        user_data["state"] = None
-        user_data["target_ticket_id"] = None
-        await show_admin_panel(update, context)
-        return
+    await update.message.reply_text("❌ فرمت نامعتبر!")
+    return QUALITIES
 
-    # ۳. مراحل افزودن فیلم جدید توسط ادمین
-    if user_id == ADMIN_ID and user_data.get("state") == "add_movie_name":
-        user_data["temp_movie_name"] = text
-        user_data["state"] = "add_movie_info"
-        await update.message.reply_text("📝 **توضیحات یا خلاصه‌داستان فیلم را وارد کنید:**")
-        return
-
-    elif user_id == ADMIN_ID and user_data.get("state") == "add_movie_info":
-        user_data["temp_movie_info"] = text
-        user_data["state"] = "add_movie_link"
-        await update.message.reply_text("🔗 **لینک دانلود یا فایل کیفیت فیلم را بفرستید:**")
-        return
-
-    elif user_id == ADMIN_ID and user_data.get("state") == "add_movie_link":
-        m_name = user_data.get("temp_movie_name")
-        m_info = user_data.get("temp_movie_info")
-        
-        config_data = load_data()
-        config_data["movies"][m_name] = {
-            "info": m_info,
-            "download_link": text
-        }
-        save_data(config_data)
-        user_data["state"] = None
-        await update.message.reply_text(f"✅ فیلم **{m_name}** با موفقیت اضافه شد!", parse_mode="Markdown")
-        await show_admin_panel(update, context)
-        return
-
-    # ۴. ارسال پیام همگانی توسط ادمین
-    if user_id == ADMIN_ID and user_data.get("state") == "waiting_for_broadcast":
-        config_data = load_data()
-        all_users = config_data.get("users", [])
-        sent_count = 0
-        
-        await update.message.reply_text("⏳ در حال ارسال پیام به تمام کاربران...")
-        for uid in all_users:
-            try:
-                await context.bot.send_message(chat_id=uid, text=text, parse_mode="Markdown")
-                sent_count += 1
-            except Exception:
-                pass
-
-        user_data["state"] = None
-        await update.message.reply_text(f"📢 **پیام همگانی با موفقیت به {sent_count} کاربر ارسال شد.**", parse_mode="Markdown")
-        await show_admin_panel(update, context)
-        return
-
-    # ۵. دکمه‌های اصلی کیبورد
-    if text == "📜 مشاهده لیست فیلم‌ها":
-        config_data = load_data()
-        movies = config_data.get("movies", {})
-        if not movies:
-            await update.message.reply_text("📜 هنوز هیچ فیلمی ثبت نشده است.")
-            return
-        
-        keyboard = []
-        for m_title in movies.keys():
-            keyboard.append([InlineKeyboardButton(f"🎬 {m_title}", callback_data=f"show_m_{m_title}")])
-        await update.message.reply_text("📋 **لیست فیلم‌های موجود:**\nیک مورد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
-
-    elif text == "🔍 جستجوی فیلم":
-        user_data["state"] = "searching_movie"
-        await update.message.reply_text("🔎 **نام فیلم مورد نظر خود را بنویسید:**")
-        return
-
-    elif user_data.get("state") == "searching_movie":
-        user_data["state"] = None
-        config_data = load_data()
-        movies = config_data.get("movies", {})
-        results = [m for m in movies.keys() if text.lower() in m.lower()]
-        
-        if results:
-            keyboard = [[InlineKeyboardButton(f"🎬 {m}", callback_data=f"show_m_{m}")] for m in results]
-            await update.message.reply_text("🎉 **نتایج یافت‌شده:**", reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await update.message.reply_text("❌ متأسفانه فیلمی با این نام یافت نشد.")
-        return
-
-    elif text == "📞 پشتیبانی / ارسال تیکت":
-        user_data["state"] = "waiting_for_ticket"
-        await update.message.reply_text("✍️ **لطفاً متن سوال یا مشکل خود را بفرستید:**", parse_mode="Markdown")
-        return
-
-    elif text == "⚙️ پنل مدیریت" and user_id == ADMIN_ID:
-        await show_admin_panel(update, context)
-        return
-
-    # ۶. مدیریت افزودن/حذف کانال‌ها
-    if user_id == ADMIN_ID and user_data.get("awaiting_input"):
-        state = user_data.get("awaiting_input")
-        clean_ch = text.replace("@", "")
-        config_data = load_data()
-
-        if state == "add_channel":
-            if clean_ch not in config_data["channels"]:
-                config_data["channels"].append(clean_ch)
-                save_data(config_data)
-                await update.message.reply_text(f"✅ کانال @{clean_ch} اضافه شد.")
-        elif state == "del_channel":
-            if clean_ch in config_data["channels"]:
-                config_data["channels"].remove(clean_ch)
-                save_data(config_data)
-                await update.message.reply_text(f"❌ کانال @{clean_ch} حذف شد.")
-
-        user_data["awaiting_input"] = None
-        await show_admin_panel(update, context)
-        return
-
-    await update.message.reply_text("متوجه نشدم! لطفاً از دکمه‌های کیبورد پایین استفاده کنید.")
-
-# ---------------- آنتی ویروس و فیلتر فایل‌های آلوده ----------------
-async def handle_documents_security(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    doc = update.message.document
-
-    if doc:
-        file_name = doc.file_name.lower()
-        # بررسی پسوندهای خطرناک ویروسی
-        for ext in DANGEROUS_EXTENSIONS:
-            if file_name.endswith(ext):
-                await update.message.reply_text(
-                    "🚨 **هشدار امنیتی:**\n"
-                    "ارسال فایل‌های اجرایی و مشکوک ممنوع است! فایل شما توسط سیستم امنیتی بلوکه شد.",
-                    parse_mode="Markdown"
-                )
-                logging.warning(f"SECURITY ALERT: Blocked suspicious file '{file_name}' from user {user_id}")
-                return
-
-# ---------------- پردازش دکمه‌های شیشه‌ای ----------------
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- حذف فیلم ---
+async def admin_delete_movie_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data
-    user_id = update.effective_user.id
+    await query.answer()
+    movie_id = int(query.data.split("_")[1])
+    if movie_id in DB["movies"]:
+        del DB["movies"][movie_id]
+        save_db(DB)
+        await query.edit_message_text("✅ فیلم با موفقیت حذف شد.")
+    else:
+        await query.edit_message_text("❌ فیلم یافت نشد.")
 
-    if is_spamming(user_id):
-        await query.answer("لطفاً کمی صبر کنید...", show_alert=True)
+# --- مدیریت ادمین‌ها ---
+async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    admins_text = "\n".join([f"• `{a}`" for a in DB["admins"]])
+    msg = f"👥 **لیست ادمین‌های فعلی:**\n{admins_text}"
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ افزودن ادمین جدید", callback_data="admin_add_new")],
+        [InlineKeyboardButton("🗑 حذف ادمین", callback_data="admin_remove_select")],
+        [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]
+    ]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        await query.answer("❌ فقط مالک اصلی می‌تواند ادمین اضافه کند!", show_alert=True)
+        return ConversationHandler.END
+    await query.answer()
+    await query.edit_message_text("🔢 **آیدی عددی کاربر جدید را ارسال کنید:**")
+    return ADD_ADMIN_ID
+
+async def get_add_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        new_id = int(update.message.text.strip())
+        if new_id not in DB["admins"]:
+            DB["admins"].append(new_id)
+            save_db(DB)
+            await update.message.reply_text(f"✅ کاربر `{new_id}` به ادمین‌ها اضافه شد.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ این کاربر از قبل ادمین بود.")
+    except ValueError:
+        await update.message.reply_text("❌ آیدی عددی نامعتبر است.")
+    return ConversationHandler.END
+
+async def remove_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        await query.answer("❌ فقط مالک اصلی می‌تواند ادمین حذف کند!", show_alert=True)
         return
-
-    if data == "check_join_again":
-        is_joined, not_joined = await check_user_subscriptions(context, user_id)
-        if is_joined:
-            await query.answer("✅ عضویت تایید شد!")
-            await query.message.delete()
-            await context.bot.send_message(user_id, "🎬 **خوش آمدید!**", reply_markup=get_main_keyboard(user_id))
-        else:
-            await query.answer("❌ هنوز در تمام کانال‌ها عضو نشده‌اید!", show_alert=True)
-
-    elif data.startswith("show_m_"):
-        movie_title = data.replace("show_m_", "")
-        config_data = load_data()
-        movie = config_data.get("movies", {}).get(movie_title)
-        
-        if movie:
-            text = f"🎬 **{movie_title}**\n\n📝 {movie['info']}\n\n📥 **لینک دانلود:**\n{movie['download_link']}"
-            await query.edit_message_text(text=text, parse_mode="Markdown")
-        else:
-            await query.answer("فیلم یافت نشد!")
-
-    elif user_id == ADMIN_ID:
-        config_data = load_data()
-
-        if data == "admin_add_movie":
-            context.user_data["state"] = "add_movie_name"
-            await query.edit_message_text("✏️ **لطفاً نام فیلم جدید را وارد کنید:**")
-
-        elif data == "admin_broadcast":
-            context.user_data["state"] = "waiting_for_broadcast"
-            await query.edit_message_text("📢 **لطفاً پیامی که می‌خواهید برای همه ارسال شود را تایپ کنید:**")
-
-        elif data == "admin_view_tickets":
-            open_tickets = {tid: t for tid, t in config_data["tickets"].items() if t["status"] == "open"}
-            if not open_tickets:
-                await query.answer("هیچ تیکت بازی وجود ندارد!", show_alert=True)
-                return
-
-            keyboard = [[InlineKeyboardButton(f"📩 تیکت #{tid} - {t['user_name']}", callback_data=f"admin_reply_t_{tid}")] for tid, t in open_tickets.items()]
-            keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")])
-            await query.edit_message_text("📋 **لیست تیکت‌های باز:**", reply_markup=InlineKeyboardMarkup(keyboard))
-
-        elif data.startswith("admin_reply_t_"):
-            ticket_id = data.replace("admin_reply_t_", "")
-            ticket = config_data["tickets"].get(ticket_id)
-            if ticket:
-                context.user_data["state"] = "answering_ticket"
-                context.user_data["target_ticket_id"] = ticket_id
-                await query.edit_message_text(f"📩 **پاسخ به تیکت #{ticket_id}**\nمتن: {ticket['text']}\n\n👇 **پاسخ را بنویسید:**", parse_mode="Markdown")
-
-        elif data == "admin_back":
-            await show_admin_panel(update, context)
-
-        elif data == "admin_toggle_lock":
-            config_data["force_join_enabled"] = not config_data.get("force_join_enabled", True)
-            save_data(config_data)
-            await show_admin_panel(update, context)
-
-        elif data == "admin_add_channel":
-            context.user_data["awaiting_input"] = "add_channel"
-            await query.edit_message_text("✏️ آیدی کانال را **بدون @** بفرستید:")
-
-        elif data == "admin_del_channel":
-            context.user_data["awaiting_input"] = "del_channel"
-            await query.edit_message_text("✏️ آیدی کانال برای حذف را بفرستید:")
-
-if __name__ == '__main__':
-    keep_alive()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    await query.answer()
     
+    keyboard = []
+    for a_id in DB["admins"]:
+        if a_id != OWNER_ID: # مالک قابل حذف نیست
+            keyboard.append([InlineKeyboardButton(f"❌ حذف {a_id}", callback_data=f"deladmin_{a_id}")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="admin_manage_admins")])
+    await query.edit_message_text("کدام ادمین را می‌خواهید حذف کنید؟", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    target_id = int(query.data.split("_")[1])
+    if target_id in DB["admins"] and target_id != OWNER_ID:
+        DB["admins"].remove(target_id)
+        save_db(DB)
+        await query.edit_message_text(f"✅ ادمین `{target_id}` با موفقیت حذف شد.", parse_mode="Markdown")
+
+# --- تنظیم کانال جوین اجباری ---
+async def start_set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("🚫 غیرفعال‌سازی جوین اجباری", callback_data="disable_channel")]]
+    await query.edit_message_text(
+        "📢 **آیدی کانال را با @ بفرستید:**\n(مثال: `@mychannel`)\n\n⚠️ **نکته بسیار مهم:** ربات حتماً باید در کانال شما ادمین (Admin) باشد تا بتواند عضویت کاربران را بررسی کند.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return SET_CHANNEL_USERNAME
+
+async def get_channel_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ch_name = update.message.text.strip()
+    if not ch_name.startswith("@"):
+        await update.message.reply_text("❌ آیدی کانال باید با @ شروع شود.")
+        return SET_CHANNEL_USERNAME
+    
+    DB["required_channel"] = ch_name
+    save_db(DB)
+    await update.message.reply_text(f"✅ کانال جوین اجباری روی `{ch_name}` تنظیم شد.\nحتماً ربات را در کانال ادمین کنید!", parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def disable_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    DB["required_channel"] = ""
+    save_db(DB)
+    await query.edit_message_text("✅ قفل عضویت اجباری کانال غیرفعال شد.")
+
+async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ عملیات لغو شد.")
+    return ConversationHandler.END
+
+# ------------------------------------------------------------------------------
+# 7. Main Function
+# ------------------------------------------------------------------------------
+def main():
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Conversation for Adding Movie
+    movie_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_start_add, pattern="^admin_add_movie$")],
+        states={
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_title)],
+            SYNOPSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_synopsis)],
+            TEASER: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_teaser)],
+            QUALITIES: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_qualities)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_flow)]
+    )
+
+    # Conversation for Adding Admin
+    admin_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_add_admin, pattern="^admin_add_new$")],
+        states={ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_admin_id)]},
+        fallbacks=[CommandHandler("cancel", cancel_flow)]
+    )
+
+    # Conversation for Setting Channel
+    channel_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_set_channel, pattern="^admin_set_channel$")],
+        states={SET_CHANNEL_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_username)]},
+        fallbacks=[CommandHandler("cancel", cancel_flow)]
+    )
+
+    # Handlers Registration
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("panel", show_admin_panel))
-    app.add_handler(CallbackQueryHandler(handle_callbacks))
-    
-    # فیلتر امنیتی فایل‌ها و آنتی‌ویروس
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_documents_security))
-    
-    # پیام‌های متنی
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+    app.add_handler(movie_conv)
+    app.add_handler(admin_conv)
+    app.add_handler(channel_conv)
 
-    print("Bot is running securely...")
-    app.run_polling()س
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
+    app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
+    app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
+    app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
+    app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^movie_"))
+    app.add_handler(CallbackQueryHandler(send_teaser, pattern="^teaser_"))
+    app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
+    
+    # Admin Handlers
+    app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    app.add_handler(CallbackQueryHandler(list_movies, pattern="^admin_delete_movie_list$"))
+    app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^delmovie_"))
+    app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
+    app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
+    app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
+    app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
+
+    print("Bot is fully running with persistent JSON Database...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
