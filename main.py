@@ -12,8 +12,24 @@ OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
 ADMIN_IDS = {OWNER_ID}
-USERS_DB = set()
 MOVIES_DB = {}
+USERS_FILE = "users.txt"
+
+# مدیریت ذخیره دائمی کاربران
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            return set(int(line.strip()) for line in f if line.strip().isdigit())
+    return set()
+
+def save_user(user_id):
+    users = load_users()
+    if user_id not in users:
+        users.add(user_id)
+        with open(USERS_FILE, "a") as f:
+            f.write(f"{user_id}\n")
+
+USERS_DB = load_users()
 
 (GET_TITLE, GET_VIDEO, GET_NEW_ADMIN, 
  REMOVE_ADMIN, DELETE_MOVIE, BROADCAST_MSG) = range(6)
@@ -31,10 +47,20 @@ def run_dummy_server():
     server = HTTPServer(('0.0.0.0', port), DummyServer)
     server.serve_forever()
 
+async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
 # --- منوی اصلی ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    USERS_DB.add(user_id)
+    save_user(user_id)
+    
+    # پاک کردن پیام /start کاربر برای خلوت شدن چت
+    if update.message:
+        await safe_delete(context, update.message.chat_id, update.message.message_id)
     
     keyboard = []
     for m_id, m_data in MOVIES_DB.items():
@@ -46,10 +72,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     msg = "سلام! به ربات اختصاصی فیلم خوش آمدید.\nلطفاً فیلم مورد نظر خود را انتخاب کنید:" if MOVIES_DB else "سلام! هنوز هیچ فیلمی اضافه نشده است."
 
-    if update.message:
-        await update.message.reply_text(msg, reply_markup=reply_markup)
-    else:
+    if update.callback_query:
         await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+    else:
+        await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=reply_markup)
+        
     return ConversationHandler.END
 
 # --- مدیریت باز کردن پنل و آمار/نمایش فیلم ---
@@ -91,7 +118,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == 'stats':
         if user_id in ADMIN_IDS:
-            text = f"📊 **آمار کل ربات:**\n\n👥 تعداد کاربران: {len(USERS_DB)}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
+            users_count = len(load_users())
+            text = f"📊 **آمار کل ربات:**\n\n👥 تعداد کاربران: {users_count}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
             keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
             await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
@@ -108,16 +136,30 @@ async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GET_TITLE
 
 async def get_movie_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
     context.user_data['temp_title'] = update.message.text
-    await update.message.reply_text("عالی! حالا **خود ویدیو/فایل فیلم** را بفرستید:")
+    
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="عالی! حالا **خود ویدیو/فایل فیلم** را بفرستید:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return GET_VIDEO
 
 async def get_movie_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
     video_file_id = update.message.video.file_id
     title = context.user_data['temp_title']
     movie_id = str(len(MOVIES_DB) + 1)
     MOVIES_DB[movie_id] = {'title': title, 'file_id': video_file_id}
-    await update.message.reply_text(f"✅ فیلم **{title}** با موفقیت اضافه شد!")
+    
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+    await context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text=f"✅ فیلم **{title}** با موفقیت اضافه شد!",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ConversationHandler.END
 
 # --- بخش حذف فیلم ---
@@ -138,12 +180,17 @@ async def start_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DELETE_MOVIE
 
 async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
     m_id = update.message.text.strip()
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+    
     if m_id in MOVIES_DB:
         deleted = MOVIES_DB.pop(m_id)
-        await update.message.reply_text(f"✅ فیلم **{deleted['title']}** حذف شد.")
+        msg = f"✅ فیلم **{deleted['title']}** حذف شد."
     else:
-        await update.message.reply_text("❌ کدی که فرستادید معتبر نیست.")
+        msg = "❌ کدی که فرستادید معتبر نیست."
+        
+    await context.bot.send_message(chat_id=update.message.chat_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
 # --- بخش مدیریت ادمین‌ها ---
@@ -160,12 +207,16 @@ async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GET_NEW_ADMIN
 
 async def process_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
     try:
         new_id = int(update.message.text.strip())
         ADMIN_IDS.add(new_id)
-        await update.message.reply_text(f"✅ کاربر `{new_id}` با موفقیت ادمین شد.", parse_mode='Markdown')
+        msg = f"✅ کاربر `{new_id}` با موفقیت ادمین شد."
     except ValueError:
-        await update.message.reply_text("❌ آیدی عددی نامعتبر است.")
+        msg = "❌ آیدی عددی نامعتبر است."
+        
+    await context.bot.send_message(chat_id=update.message.chat_id, text=msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
 async def start_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,17 +232,21 @@ async def start_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REMOVE_ADMIN
 
 async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
     try:
         target_id = int(update.message.text.strip())
         if target_id == OWNER_ID:
-            await update.message.reply_text("❌ امکان حذف ادمین اصلی وجود ندارد!")
+            msg = "❌ امکان حذف ادمین اصلی وجود ندارد!"
         elif target_id in ADMIN_IDS:
             ADMIN_IDS.remove(target_id)
-            await update.message.reply_text(f"✅ دسترسی ادمین `{target_id}` گرفته شد.", parse_mode='Markdown')
+            msg = f"✅ دسترسی ادمین `{target_id}` گرفته شد."
         else:
-            await update.message.reply_text("این کاربر در لیست ادمین‌ها نبود.")
+            msg = "این کاربر در لیست ادمین‌ها نبود."
     except ValueError:
-        await update.message.reply_text("❌ آیدی عددی نامعتبر است.")
+        msg = "❌ آیدی عددی نامعتبر است."
+        
+    await context.bot.send_message(chat_id=update.message.chat_id, text=msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
 # --- پیام همگانی ---
@@ -203,15 +258,25 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BROADCAST_MSG
 
 async def process_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # پاک کردن پیام متنی ادمین
+    await safe_delete(context, update.message.chat_id, update.message.message_id)
+    
     msg_text = update.message.text
+    users = load_users()
     count = 0
-    for uid in USERS_DB:
+    for uid in users:
         try:
             await context.bot.send_message(chat_id=uid, text=msg_text)
             count += 1
         except Exception:
             pass
-    await update.message.reply_text(f"📢 پیام برای {count} کاربر ارسال شد.")
+            
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+    await context.bot.send_message(
+        chat_id=update.message.chat_id, 
+        text=f"📢 پیام برای {count} کاربر ارسال شد.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
