@@ -470,4 +470,4 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 
     print("Bot is running securely...")
-    app.run_polling()
+    app.run_polling()س
