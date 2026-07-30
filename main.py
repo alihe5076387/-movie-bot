@@ -1,9 +1,10 @@
 import os
 import json
 import logging
+import urllib.request
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -13,20 +14,21 @@ from telegram.ext import (
 OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
-# اطلاعات اتصال مستقیم به دیتابیس ابری Upstash
+# اطلاعات اتصال به دیتابیس ابری Upstash
 REDIS_URL = "https://strong-boxer-108975.upstash.io"
 REDIS_TOKEN = "gQAAAAAAAamvAAIgcDJhYjNiY2E1MjFiODU0Mzc5OGZmOWI0ZjM4ODBkMWRkOA"
 
 ADMIN_IDS = {OWNER_ID}
 
-# --- ذخیره و دریافت کاربران از دیتابیس ابری ---
+# --- ذخیره و دریافت کاربران از دیتابیس ابری (بدون نیاز به requests) ---
 def load_users():
     try:
         url = f"{REDIS_URL}/smembers/bot_users"
-        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
-        res = requests.get(url, headers=headers).json()
-        if "result" in res and res["result"]:
-            return set(int(x) for x in res["result"])
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            if "result" in res and res["result"]:
+                return set(int(x) for x in res["result"])
     except Exception as e:
         logging.error(f"Error loading users: {e}")
     return set()
@@ -34,8 +36,8 @@ def load_users():
 def save_user(user_id):
     try:
         url = f"{REDIS_URL}/sadd/bot_users/{user_id}"
-        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
-        requests.get(url, headers=headers)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
+        urllib.request.urlopen(req)
     except Exception as e:
         logging.error(f"Error saving user: {e}")
 
@@ -43,20 +45,21 @@ def save_user(user_id):
 def load_movies():
     try:
         url = f"{REDIS_URL}/get/bot_movies"
-        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
-        res = requests.get(url, headers=headers).json()
-        if "result" in res and res["result"]:
-            return json.loads(res["result"])
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode('utf-8'))
+            if "result" in res and res["result"]:
+                return json.loads(res["result"])
     except Exception as e:
         logging.error(f"Error loading movies: {e}")
     return {}
 
 def save_movies(movies_db):
     try:
-        data = json.dumps(movies_db, ensure_ascii=False)
+        data = json.dumps(movies_db, ensure_ascii=False).encode('utf-8')
         url = f"{REDIS_URL}/set/bot_movies"
-        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
-        requests.post(url, headers=headers, data=data)
+        req = urllib.request.Request(url, data=data, headers={"Authorization": f"Bearer {REDIS_TOKEN}"}, method='POST')
+        urllib.request.urlopen(req)
     except Exception as e:
         logging.error(f"Error saving movies: {e}")
 
