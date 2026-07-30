@@ -27,7 +27,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
 # ⚠️ حتماً آیدی عددی تلگرام خودت رو اینجا بگذار (مثلاً 123456789)
-SUPER_ADMIN_ID = int(os.environ.get("ADMIN_ID", "123456789"))
+SUPER_ADMIN_ID = int(os.environ.get("ADMIN_ID", "7474010387"))
 
 if RENDER_URL and RENDER_URL.endswith("/"):
     RENDER_URL = RENDER_URL[:-1]
