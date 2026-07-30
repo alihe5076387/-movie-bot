@@ -46,7 +46,7 @@ OWNER_ID = 7474010387  # آیدی عددی مالک اصلی
 
 DEFAULT_DATA = {
     "admins": [OWNER_ID],
-    "required_channel": "",  # آیدی کانال جوین اجباری (مثلا @mychannel)
+    "required_channel": "",
     "movie_counter": 1,
     "movies": {}
 }
@@ -58,7 +58,7 @@ def load_db():
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # تبدیل کلیدهای دیکشنری فیلم به int
+            # تبدیل کلیدهای فیلم به int
             data["movies"] = {int(k): v for k, v in data.get("movies", {}).items()}
             return data
     except Exception as e:
@@ -75,7 +75,7 @@ def save_db(data):
 DB = load_db()
 BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
-# States
+# Conversation States
 (
     TITLE, SYNOPSIS, TEASER, QUALITIES, 
     ADD_ADMIN_ID, SET_CHANNEL_USERNAME
@@ -101,7 +101,7 @@ async def check_channel_membership(user_id: int, context: ContextTypes.DEFAULT_T
         return member.status in ["creator", "administrator", "member"]
     except Exception as e:
         logger.error(f"Channel Check Error: {e}")
-        return True # در صورت بروز خطا برای عدم مسدودی کاربر
+        return True
 
 # ------------------------------------------------------------------------------
 # 5. User Handlers
@@ -177,11 +177,11 @@ async def list_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for m_id, m_data in movies.items():
-        keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"movie_{m_id}")])
+        keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"mv_{m_id}")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main")])
 
     await query.edit_message_text(
-        "📋 **فهرست فیلم‌های موجود:**",
+        "📋 **فهرست فیلم‌های موجود:**\nفیلم مورد نظر خود را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -190,27 +190,35 @@ async def show_movie_details(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
 
-    movie_id = int(query.data.split("_")[1])
+    try:
+        movie_id = int(query.data.split("_")[1])
+    except Exception:
+        await query.edit_message_text("❌ دیتای نامعتبر.")
+        return
+
     movie = DB["movies"].get(movie_id)
 
     if not movie:
-        await query.edit_message_text("❌ فیلم یافت نشد.")
+        await query.edit_message_text("❌ فیلم یافت نشد یا پاک شده است.")
         return
 
     caption = f"🎬 **{movie['title']}**\n\n📝 **خلاصه داستان:**\n{movie['synopsis']}\n"
     keyboard = []
+    
+    # دکمه‌های کیفیت با شناسه کوتاه
     q_buttons = []
-    for q_name in movie.get("qualities", {}).keys():
-        q_buttons.append(InlineKeyboardButton(f"📥 {q_name}", callback_data=f"dl_{movie_id}_{q_name}"))
+    qualities = movie.get("qualities", {})
+    for idx, q_name in enumerate(qualities.keys()):
+        q_buttons.append(InlineKeyboardButton(f"📥 {q_name}", callback_data=f"dl_{movie_id}_{idx}"))
     if q_buttons:
         keyboard.append(q_buttons)
 
     if movie.get("teaser_file_id"):
-        keyboard.append([InlineKeyboardButton("🎥 تماشای تیزر", callback_data=f"teaser_{movie_id}")])
+        keyboard.append([InlineKeyboardButton("🎥 تماشای تیزر", callback_data=f"ts_{movie_id}")])
 
-    # اگر ادمین بود دکمه حذف هم داشته باشه
+    # دکمه حذف اختصاصی برای ادمین‌ها
     if is_admin(query.from_user.id):
-        keyboard.append([InlineKeyboardButton("🗑 حذف این فیلم (مدیریت)", callback_data=f"delmovie_{movie_id}")])
+        keyboard.append([InlineKeyboardButton("🗑 حذف این فیلم", callback_data=f"dmv_{movie_id}")])
 
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data="list_movies")])
 
@@ -227,19 +235,32 @@ async def send_teaser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    parts = query.data.split("_")
-    movie_id, q_name = int(parts[1]), parts[2]
-    movie = DB["movies"].get(movie_id)
     
-    if not movie or q_name not in movie.get("qualities", {}):
+    parts = query.data.split("_")
+    movie_id = int(parts[1])
+    q_idx = int(parts[2])
+
+    movie = DB["movies"].get(movie_id)
+    if not movie:
+        await query.message.reply_text("❌ فیلم پیدا نشد.")
+        return
+
+    qualities_list = list(movie.get("qualities", {}).items())
+    if q_idx >= len(qualities_list):
         await query.message.reply_text("❌ کیفیت نامعتبر است.")
         return
 
-    file_ref = movie["qualities"][q_name]
-    if file_ref.startswith("http"):
-        await query.message.reply_text(f"🔗 **لینک دانلود ({q_name}):**\n{file_ref}", parse_mode="Markdown")
-    else:
-        await query.message.reply_video(video=file_ref, caption=f"🎬 {movie['title']} - {q_name}")
+    q_name, file_ref = qualities_list[q_idx]
+    await query.message.reply_text(f"⏳ در حال آماده‌سازی **{q_name}** فیلم **{movie['title']}**...", parse_mode="Markdown")
+
+    try:
+        if file_ref.startswith("http"):
+            await query.message.reply_text(f"🔗 **لینک دانلود ({q_name}):**\n{file_ref}", parse_mode="Markdown")
+        else:
+            await query.message.reply_video(video=file_ref, caption=f"🎬 {movie['title']} - {q_name}")
+    except Exception as e:
+        logger.error(f"Error sending video: {e}")
+        await query.message.reply_text("❌ خطا در ارسال فایل. دوباره تلاش کنید.")
 
 # ------------------------------------------------------------------------------
 # 6. Admin Panel Functions
@@ -252,11 +273,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     channel_status = DB.get("required_channel") or "غیرفعال"
-    text = f"⚙️ **پنل مدیریت ربات**\n\n📢 **کانال جوین اجباری فعلی:** {channel_status}\n👥 **تعداد ادمین‌ها:** {len(DB['admins'])}"
+    text = f"⚙️ **پنل مدیریت ربات**\n\n📢 **کانال جوین اجباری:** {channel_status}\n👥 **تعداد ادمین‌ها:** {len(DB['admins'])}"
 
     keyboard = [
         [InlineKeyboardButton("➕ افزودن فیلم جدید", callback_data="admin_add_movie")],
-        [InlineKeyboardButton("🗑 حذف فیلم", callback_data="admin_delete_movie_list")],
+        [InlineKeyboardButton("🗑 لیست حذف فیلم‌ها", callback_data="admin_delete_list")],
         [InlineKeyboardButton("👥 مدیریت ادمین‌ها", callback_data="admin_manage_admins")],
         [InlineKeyboardButton("📢 تنظیم کانال جوین اجباری", callback_data="admin_set_channel")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_to_main")]
@@ -306,7 +327,7 @@ async def admin_get_qualities(update: Update, context: ContextTypes.DEFAULT_TYPE
         DB["movie_counter"] += 1
         save_db(DB)
         
-        await update.message.reply_text(f"✅ فیلم **{movie_data['title']}** ثبت شد!", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ فیلم **{movie_data['title']}** با موفقیت ثبت شد!", parse_mode="Markdown")
         return ConversationHandler.END
 
     if update.message.video and update.message.caption:
@@ -326,16 +347,40 @@ async def admin_get_qualities(update: Update, context: ContextTypes.DEFAULT_TYPE
     return QUALITIES
 
 # --- حذف فیلم ---
+async def admin_delete_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    movies = DB.get("movies", {})
+    if not movies:
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]]
+        await query.edit_message_text("هیچ فیلمی برای حذف وجود ندارد.", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    keyboard = []
+    for m_id, m_data in movies.items():
+        keyboard.append([InlineKeyboardButton(f"❌ حذف: {m_data['title']}", callback_data=f"dmv_{m_id}")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")])
+
+    await query.edit_message_text(
+        "🗑 **روی فیلم مورد نظر جهت حذف کلیک کنید:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
 async def admin_delete_movie_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     movie_id = int(query.data.split("_")[1])
     if movie_id in DB["movies"]:
+        deleted_title = DB["movies"][movie_id]["title"]
         del DB["movies"][movie_id]
         save_db(DB)
-        await query.edit_message_text("✅ فیلم با موفقیت حذف شد.")
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]]
+        await query.edit_message_text(f"✅ فیلم **{deleted_title}** با موفقیت حذف شد.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await query.edit_message_text("❌ فیلم یافت نشد.")
+        await query.edit_message_text("❌ این فیلم قبلاً حذف شده است.")
 
 # --- مدیریت ادمین‌ها ---
 async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -383,7 +428,7 @@ async def remove_admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = []
     for a_id in DB["admins"]:
-        if a_id != OWNER_ID: # مالک قابل حذف نیست
+        if a_id != OWNER_ID:
             keyboard.append([InlineKeyboardButton(f"❌ حذف {a_id}", callback_data=f"deladmin_{a_id}")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="admin_manage_admins")])
     await query.edit_message_text("کدام ادمین را می‌خواهید حذف کنید؟", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -403,7 +448,7 @@ async def start_set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     keyboard = [[InlineKeyboardButton("🚫 غیرفعال‌سازی جوین اجباری", callback_data="disable_channel")]]
     await query.edit_message_text(
-        "📢 **آیدی کانال را با @ بفرستید:**\n(مثال: `@mychannel`)\n\n⚠️ **نکته بسیار مهم:** ربات حتماً باید در کانال شما ادمین (Admin) باشد تا بتواند عضویت کاربران را بررسی کند.",
+        "📢 **آیدی کانال را با @ بفرستید:**\n(مثال: `@mychannel`)\n\n⚠️ **نکته:** ربات حتماً باید در کانال ادمین باشد.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -417,7 +462,7 @@ async def get_channel_username(update: Update, context: ContextTypes.DEFAULT_TYP
     
     DB["required_channel"] = ch_name
     save_db(DB)
-    await update.message.reply_text(f"✅ کانال جوین اجباری روی `{ch_name}` تنظیم شد.\nحتماً ربات را در کانال ادمین کنید!", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ کانال جوین اجباری روی `{ch_name}` تنظیم شد.", parse_mode="Markdown")
     return ConversationHandler.END
 
 async def disable_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -475,20 +520,22 @@ def main():
     app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
     app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
-    app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^movie_"))
-    app.add_handler(CallbackQueryHandler(send_teaser, pattern="^teaser_"))
+    
+    # دکمه‌های کوتاه شده برای نمایش فیلم، تیزر، دانلود و حذف
+    app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
+    app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
     app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
+    app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
     
     # Admin Handlers
     app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    app.add_handler(CallbackQueryHandler(list_movies, pattern="^admin_delete_movie_list$"))
-    app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^delmovie_"))
+    app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
     app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
     app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
     app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
     app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
 
-    print("Bot is fully running with persistent JSON Database...")
+    print("Bot is fully running with optimized Callback Data...")
     app.run_polling()
 
 if __name__ == "__main__":
