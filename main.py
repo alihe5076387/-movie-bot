@@ -1,3 +1,4 @@
+import os
 import logging
 import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -16,15 +17,17 @@ GET_TITLE, GET_VIDEO = range(2)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- وب سرور ساختگی برای تایید Health Check در Render ---
+# --- وب سرور رایگان برای حل ارور Timeout در Render ---
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        self.wfile.write(b"Bot is alive and free!")
 
 def run_dummy_server():
-    server = HTTPServer(('0.0.0.0', 10000), DummyServer)
+    # خواندن پورتی که Render به صورت رایگان اختصاص میده
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyServer)
     server.serve_forever()
 
 # --- بخش اصلی ربات ---
@@ -94,7 +97,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 if __name__ == '__main__':
-    # اجرا کردن وب سرور در یک Thread جداگانه
+    # اجرا کردن وب سرور رایگان روی پورت Render
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
