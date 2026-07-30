@@ -3,6 +3,7 @@ import json
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -12,37 +13,52 @@ from telegram.ext import (
 OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
-ADMIN_IDS = {OWNER_ID}
-USERS_FILE = "users.txt"
-MOVIES_FILE = "movies.json"
+# اطلاعات اتصال مستقیم به دیتابیس ابری Upstash
+REDIS_URL = "https://strong-boxer-108975.upstash.io"
+REDIS_TOKEN = "gQAAAAAAAamvAAIgcDJhYjNiY2E1MjFiODU0Mzc5OGZmOWI0ZjM4ODBkMWRkOA"
 
-# --- ذخیره‌سازی دائمی کاربران ---
+ADMIN_IDS = {OWNER_ID}
+
+# --- ذخیره و دریافت کاربران از دیتابیس ابری ---
 def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return set(int(line.strip()) for line in f if line.strip().isdigit())
+    try:
+        url = f"{REDIS_URL}/smembers/bot_users"
+        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
+        res = requests.get(url, headers=headers).json()
+        if "result" in res and res["result"]:
+            return set(int(x) for x in res["result"])
+    except Exception as e:
+        logging.error(f"Error loading users: {e}")
     return set()
 
 def save_user(user_id):
-    users = load_users()
-    if user_id not in users:
-        users.add(user_id)
-        with open(USERS_FILE, "a") as f:
-            f.write(f"{user_id}\n")
+    try:
+        url = f"{REDIS_URL}/sadd/bot_users/{user_id}"
+        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
+        requests.get(url, headers=headers)
+    except Exception as e:
+        logging.error(f"Error saving user: {e}")
 
-# --- ذخیره‌سازی دائمی فیلم‌ها ---
+# --- ذخیره و دریافت فیلم‌ها از دیتابیس ابری ---
 def load_movies():
-    if os.path.exists(MOVIES_FILE):
-        try:
-            with open(MOVIES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+    try:
+        url = f"{REDIS_URL}/get/bot_movies"
+        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
+        res = requests.get(url, headers=headers).json()
+        if "result" in res and res["result"]:
+            return json.loads(res["result"])
+    except Exception as e:
+        logging.error(f"Error loading movies: {e}")
     return {}
 
 def save_movies(movies_db):
-    with open(MOVIES_FILE, "w", encoding="utf-8") as f:
-        json.dump(movies_db, f, ensure_ascii=False, indent=4)
+    try:
+        data = json.dumps(movies_db, ensure_ascii=False)
+        url = f"{REDIS_URL}/set/bot_movies"
+        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
+        requests.post(url, headers=headers, data=data)
+    except Exception as e:
+        logging.error(f"Error saving movies: {e}")
 
 MOVIES_DB = load_movies()
 
@@ -68,7 +84,6 @@ async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_
     except Exception:
         pass
 
-# تنظیم دستورات منو
 async def post_init(application):
     commands = [
         BotCommand("start", "🏠 منوی اصلی و لیست فیلم‌ها"),
@@ -76,7 +91,6 @@ async def post_init(application):
     ]
     await application.bot.set_my_commands(commands)
 
-# --- منوی اصلی ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     save_user(user_id)
@@ -85,12 +99,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_delete(context, update.message.chat_id, update.message.message_id)
     
     keyboard = []
-    # افزودن فیلم‌ها
     for m_id, m_data in MOVIES_DB.items():
         views = m_data.get('views', 0)
         keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']} ({views} بازدید)", callback_data=f"show_{m_id}")])
 
-    # دکمه‌های کاربردی
     user_tools = [
         InlineKeyboardButton("🔍 جستجوی فیلم", callback_data='search_btn'),
         InlineKeyboardButton("🔥 محبوب‌ترین‌ها", callback_data='top_movies')
@@ -114,7 +126,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     return ConversationHandler.END
 
-# --- مدیریت باز کردن پنل و آمار/نمایش فیلم ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -124,7 +135,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m_id = query.data.replace('show_', '')
         movie = MOVIES_DB.get(m_id)
         if movie:
-            # افزایش آمار بازدید
             movie['views'] = movie.get('views', 0) + 1
             save_movies(MOVIES_DB)
             
@@ -183,7 +193,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
 
-# --- جستجوی فیلم ---
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
@@ -206,7 +215,7 @@ async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     if results:
         keyboard = []
-        text = f"🔎 نتايج جستجو برای «{search_query}»:\n"
+        text = f"🔎 نتایج جستجو برای «{search_query}»:\n"
         for m_id, m_data in results:
             keyboard.append([InlineKeyboardButton(f"🎬 {m_data['title']}", callback_data=f"show_{m_id}")])
         keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data='back_home')])
@@ -217,7 +226,6 @@ async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     return ConversationHandler.END
 
-# --- بخش افزودن فیلم ---
 async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -257,7 +265,6 @@ async def get_movie_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- بخش حذف فیلم ---
 async def start_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -289,7 +296,6 @@ async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.message.chat_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
-# --- مدیریت ادمین‌ها ---
 async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -345,7 +351,6 @@ async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.message.chat_id, text=msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
-# --- پیام همگانی ---
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
