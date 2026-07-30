@@ -522,11 +522,11 @@ def run_telegram_bot():
     logger.info("Initializing Telegram Bot Polling...")
     bot_app.run_polling(close_loop=False)
 
-# روشن کردن ربات تلگرام در پس‌زمینه
+# ۱. ابتدا ربات تلگرام را در background روشن می‌کنیم
 t = threading.Thread(target=run_telegram_bot, daemon=True)
 t.start()
 
-# این بخش اصلی پروژه برای اجرای وب‌سرور Flask روی پورت Render است
+# ۲. سپس سرور Flask اجرا می‌شود
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
