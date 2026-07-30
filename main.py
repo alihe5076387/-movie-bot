@@ -49,8 +49,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(msg, reply_markup=reply_markup)
     else:
-        # ویرایش پیام قبلی در صورت بازگشت
         await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+    return ConversationHandler.END
 
 # --- مدیریت باز کردن پنل و آمار/نمایش فیلم ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +62,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m_id = query.data.replace('show_', '')
         movie = MOVIES_DB.get(m_id)
         if movie:
-            # ارسال خود ویدیو ناچارا پیام جدید می‌خواهد، اما کپشن و تگ قفل دارد
             await context.bot.send_video(
                 chat_id=query.message.chat_id,
                 video=movie['file_id'],
@@ -83,19 +82,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data='broadcast')],
             [InlineKeyboardButton("📊 آمار ربات", callback_data='stats')]
         ]
-        # ویرایش همان پیام قبلی برای نمایش پنل مدیریت
         await query.edit_message_text(
             "🛠 **پنل مدیریت پیشرفته**\nلطفاً یک گزینه را انتخاب کنید:", 
             reply_markup=InlineKeyboardMarkup(keyboard), 
             parse_mode='Markdown'
         )
+        return ConversationHandler.END
         
     elif query.data == 'stats':
         if user_id in ADMIN_IDS:
             text = f"📊 **آمار کل ربات:**\n\n👥 تعداد کاربران: {len(USERS_DB)}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
             keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
-            # ویرایش پیام قبلی برای نمایش آمار
             await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            return ConversationHandler.END
 
 # --- بخش افزودن فیلم ---
 async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,7 +102,9 @@ async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if query.from_user.id not in ADMIN_IDS:
         return ConversationHandler.END
-    await query.edit_message_text("لطفاً **عنوان/اسم فیلم** را ارسال کنید:")
+    
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await query.edit_message_text("لطفاً **عنوان/اسم فیلم** را ارسال کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
     return GET_TITLE
 
 async def get_movie_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,14 +125,16 @@ async def start_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not MOVIES_DB:
-        await query.edit_message_text("هیچ فیلمی برای حذف وجود ندارد.")
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+        await query.edit_message_text("هیچ فیلمی برای حذف وجود ندارد.", reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
     
     text = "لیست فیلم‌ها:\n"
     for m_id, m_data in MOVIES_DB.items():
         text += f"کد `{m_id}` -> {m_data['title']}\n"
     text += "\nلطفاً **کد فیلم** مورد نظر جهت حذف را بفرستید:"
-    await query.edit_message_text(text, parse_mode='Markdown')
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     return DELETE_MOVIE
 
 async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -148,9 +151,12 @@ async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID:
-        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین جدید اضافه کند.")
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین جدید اضافه کند.", reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
-    await query.edit_message_text("لطفاً **آیدی عددی (User ID)** کاربر مورد نظر را بفرستید:")
+    
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await query.edit_message_text("لطفاً **آیدی عددی (User ID)** کاربر مورد نظر را بفرستید:", reply_markup=InlineKeyboardMarkup(keyboard))
     return GET_NEW_ADMIN
 
 async def process_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,9 +172,12 @@ async def start_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID:
-        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین‌ها را عزل کند.")
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین‌ها را عزل کند.", reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
-    await query.edit_message_text("لطفاً **آیدی عددی** ادمینی که می‌خواهید دسترسی‌اش گرفته شود را بفرستید:")
+    
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await query.edit_message_text("لطفاً **آیدی عددی** ادمینی که می‌خواهید دسترسی‌اش گرفته شود را بفرستید:", reply_markup=InlineKeyboardMarkup(keyboard))
     return REMOVE_ADMIN
 
 async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,7 +198,8 @@ async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("متن پیامی که می‌خواهید برای **همه کاربران** ارسال شود را بفرستید:")
+    keyboard = [[InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='admin_panel')]]
+    await query.edit_message_text("متن پیامی که می‌خواهید برای **همه کاربران** ارسال شود را بفرستید:", reply_markup=InlineKeyboardMarkup(keyboard))
     return BROADCAST_MSG
 
 async def process_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,14 +231,35 @@ if __name__ == '__main__':
             CallbackQueryHandler(start_broadcast, pattern='^broadcast$')
         ],
         states={
-            GET_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_movie_title)],
-            GET_VIDEO: [MessageHandler(filters.VIDEO, get_movie_video)],
-            DELETE_MOVIE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_del_movie)],
-            GET_NEW_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_admin)],
-            REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_rem_admin)],
-            BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast)]
+            GET_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_movie_title),
+                CallbackQueryHandler(handle_callback)
+            ],
+            GET_VIDEO: [
+                MessageHandler(filters.VIDEO, get_movie_video),
+                CallbackQueryHandler(handle_callback)
+            ],
+            DELETE_MOVIE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_del_movie),
+                CallbackQueryHandler(handle_callback)
+            ],
+            GET_NEW_ADMIN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_admin),
+                CallbackQueryHandler(handle_callback)
+            ],
+            REMOVE_ADMIN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_rem_admin),
+                CallbackQueryHandler(handle_callback)
+            ],
+            BROADCAST_MSG: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast),
+                CallbackQueryHandler(handle_callback)
+            ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CallbackQueryHandler(handle_callback)
+        ],
         per_chat=True,
         per_user=True,
         per_message=False
