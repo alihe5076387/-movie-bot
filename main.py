@@ -1,11 +1,30 @@
 import logging
 import json
 import os
+from threading import Thread
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
 )
+
+# ---------------- وب‌سرور برای جلوگیری از Timed Out در Render ----------------
+app_web = Flask('')
+
+@app_web.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_web():
+    # پورت مورد نیاز Render
+    port = int(os.environ.get("PORT", 8080))
+    app_web.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
 
 # ---------------- تنظیمات اصلی ----------------
 BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
@@ -13,13 +32,11 @@ ADMIN_ID = 7474072387
 
 DATA_FILE = "settings.json"
 
-# تنظیم لاگ‌ها
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# ---------------- مدیریت ذخیره‌سازی تنظیمات ----------------
 def load_data():
     if not os.path.exists(DATA_FILE):
         default_data = {"force_join_enabled": True, "channels": []}
@@ -32,7 +49,6 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# ---------------- دیتابیس فیلم‌ها ----------------
 movies_db = {
     "Inception": {
         "info": "سال ساخت: 2010 | کارگردان: کریستوفر نولان",
@@ -43,11 +59,10 @@ movies_db = {
     }
 }
 
-# ---------------- بررسی عضویت در همه کانال‌ها ----------------
 async def check_user_subscriptions(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     data = load_data()
     if not data.get("force_join_enabled", True):
-        return True, []  # اگر قفل خاموش باشه، تایید میشه
+        return True, []
 
     not_joined = []
     for channel in data.get("channels", []):
@@ -56,13 +71,10 @@ async def check_user_subscriptions(context: ContextTypes.DEFAULT_TYPE, user_id: 
             if member.status not in ['member', 'administrator', 'creator']:
                 not_joined.append(channel)
         except Exception:
-            # اگر ربات توی کانال ادمین نباشه یا آیدی اشتباه باشه
             not_joined.append(channel)
 
-    is_all_joined = (len(not_joined) == 0)
-    return is_all_joined, not_joined
+    return (len(not_joined) == 0), not_joined
 
-# ---------------- پیام عضویت اجباری ----------------
 async def show_force_join_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, not_joined_channels: list, target_param: str = ""):
     keyboard = []
     for ch in not_joined_channels:
@@ -78,7 +90,6 @@ async def show_force_join_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# ---------------- دستور /start ----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
@@ -95,7 +106,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_main_menu(update, context)
 
-# ---------------- منوی اصلی و دانلود ----------------
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🎬 **به آرشیو رایگان فیلم خوش آمدید!**\nاز منوی زیر استفاده کنید:"
     keyboard = [[InlineKeyboardButton("📜 مشاهده لیست فیلم‌ها", callback_data="list_movies")]]
@@ -125,9 +135,6 @@ async def send_movie_page(update: Update, context: ContextTypes.DEFAULT_TYPE, mo
     else:
         await update.message.reply_text(text=text, reply_markup=markup, parse_mode="Markdown")
 
-# ----------------------------------------------------
-# 👑 بخش پنل ادمین (ADMIN PANEL)
-# ----------------------------------------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -157,13 +164,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# ---------------- مدیریت کارهای ادمین و دکمه‌ها ----------------
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     user_id = update.effective_user.id
 
-    # ۱. بررسی عضویت مجدد کاربر
     if data.startswith("check_join_"):
         target_param = data.replace("check_join_", "")
         is_joined, not_joined = await check_user_subscriptions(context, user_id)
@@ -180,7 +185,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "main_menu":
         await send_main_menu(update, context)
 
-    # ۲. دکمه‌های پنل ادمین
     elif user_id == ADMIN_ID:
         config_data = load_data()
 
@@ -198,7 +202,6 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_input"] = "del_channel"
             await query.edit_message_text("✏️ لطفاً آیدی کانالی که می‌خواهید حذف شود را **بدون @** بفرستید:", parse_mode="Markdown")
 
-# ---------------- دریافت متن ورودی از ادمین ----------------
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -215,7 +218,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         if text not in config_data["channels"]:
             config_data["channels"].append(text)
             save_data(config_data)
-            await update.message.reply_text(f"✅ کانال @{text} با موفقیت اضافه شد.\n⚠️ **نکته مهم:** حتماً ربات را در این کانال ادمین کنید!")
+            await update.message.reply_text(f"✅ کانال @{text} اضافه شد.")
         else:
             await update.message.reply_text("این کانال قبلاً اضافه شده است.")
 
@@ -230,13 +233,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["awaiting_input"] = None
     await admin_panel(update, context)
 
-# ---------------- بخش اصلی اجرا ----------------
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # روشن کردن وب‌سرور برای پاس کردن Health Check در Render
+    keep_alive()
 
-    # ثبت دستورات
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("panel", admin_panel))  # دستور پنل ادمین
+    app.add_handler(CommandHandler("panel", admin_panel))
     app.add_handler(CallbackQueryHandler(handle_callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 
