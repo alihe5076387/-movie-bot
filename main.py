@@ -8,22 +8,18 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters, ContextTypes
 )
 
-# ⚠️ آیدی عددی تلگرام خودت به عنوان ادمین اصلی
 OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
-# دیتابیس‌های موقت در حافظه
 ADMIN_IDS = {OWNER_ID}
 USERS_DB = set()
 MOVIES_DB = {}
 
-# حالت‌های گفتگو (Conversation States)
 (GET_TITLE, GET_VIDEO, GET_NEW_ADMIN, 
  REMOVE_ADMIN, DELETE_MOVIE, BROADCAST_MSG) = range(6)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- وب سرور ساختگی برای Health Check رایگان Render ---
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -53,9 +49,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(msg, reply_markup=reply_markup)
     else:
-        await update.callback_query.message.reply_text(msg, reply_markup=reply_markup)
+        # ویرایش پیام قبلی در صورت بازگشت
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
 
-# --- مدیریت کلیک روی دکمه‌ها ---
+# --- مدیریت باز کردن پنل و آمار/نمایش فیلم ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -65,6 +62,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m_id = query.data.replace('show_', '')
         movie = MOVIES_DB.get(m_id)
         if movie:
+            # ارسال خود ویدیو ناچارا پیام جدید می‌خواهد، اما کپشن و تگ قفل دارد
             await context.bot.send_video(
                 chat_id=query.message.chat_id,
                 video=movie['file_id'],
@@ -85,14 +83,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data='broadcast')],
             [InlineKeyboardButton("📊 آمار ربات", callback_data='stats')]
         ]
-        await query.message.reply_text("🛠 **پنل مدیریت پیشرفته**\nلطفاً یک گزینه را انتخاب کنید:", 
-                                       reply_markup=InlineKeyboardMarkup(keyboard), 
-                                       parse_mode='Markdown')
+        # ویرایش همان پیام قبلی برای نمایش پنل مدیریت
+        await query.edit_message_text(
+            "🛠 **پنل مدیریت پیشرفته**\nلطفاً یک گزینه را انتخاب کنید:", 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode='Markdown'
+        )
         
     elif query.data == 'stats':
         if user_id in ADMIN_IDS:
             text = f"📊 **آمار کل ربات:**\n\n👥 تعداد کاربران: {len(USERS_DB)}\n🎬 تعداد فیلم‌ها: {len(MOVIES_DB)}\n👮‍♂️ تعداد ادمین‌ها: {len(ADMIN_IDS)}"
-            await query.message.reply_text(text, parse_mode='Markdown')
+            keyboard = [[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin_panel')]]
+            # ویرایش پیام قبلی برای نمایش آمار
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 # --- بخش افزودن فیلم ---
 async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,7 +103,7 @@ async def start_add_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if query.from_user.id not in ADMIN_IDS:
         return ConversationHandler.END
-    await query.message.reply_text("لطفاً **عنوان/اسم فیلم** را ارسال کنید:")
+    await query.edit_message_text("لطفاً **عنوان/اسم فیلم** را ارسال کنید:")
     return GET_TITLE
 
 async def get_movie_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,14 +124,14 @@ async def start_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not MOVIES_DB:
-        await query.message.reply_text("هیچ فیلمی برای حذف وجود ندارد.")
+        await query.edit_message_text("هیچ فیلمی برای حذف وجود ندارد.")
         return ConversationHandler.END
     
     text = "لیست فیلم‌ها:\n"
     for m_id, m_data in MOVIES_DB.items():
         text += f"کد `{m_id}` -> {m_data['title']}\n"
     text += "\nلطفاً **کد فیلم** مورد نظر جهت حذف را بفرستید:"
-    await query.message.reply_text(text, parse_mode='Markdown')
+    await query.edit_message_text(text, parse_mode='Markdown')
     return DELETE_MOVIE
 
 async def process_del_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,9 +148,9 @@ async def start_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID:
-        await query.message.reply_text("⚠️ فقط ادمین اصلی می‌تواند ادمین جدید اضافه کند.")
+        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین جدید اضافه کند.")
         return ConversationHandler.END
-    await query.message.reply_text("لطفاً **آیدی عددی (User ID)** کاربر مورد نظر را بفرستید:")
+    await query.edit_message_text("لطفاً **آیدی عددی (User ID)** کاربر مورد نظر را بفرستید:")
     return GET_NEW_ADMIN
 
 async def process_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,9 +166,9 @@ async def start_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID:
-        await query.message.reply_text("⚠️ فقط ادمین اصلی می‌تواند ادمین‌ها را عزل کند.")
+        await query.edit_message_text("⚠️ فقط ادمین اصلی می‌تواند ادمین‌ها را عزل کند.")
         return ConversationHandler.END
-    await query.message.reply_text("لطفاً **آیدی عددی** ادمینی که می‌خواهید دسترسی‌اش گرفته شود را بفرستید:")
+    await query.edit_message_text("لطفاً **آیدی عددی** ادمینی که می‌خواهید دسترسی‌اش گرفته شود را بفرستید:")
     return REMOVE_ADMIN
 
 async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,7 +189,7 @@ async def process_rem_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("متن پیامی که می‌خواهید برای **همه کاربران** ارسال شود را بفرستید:")
+    await query.edit_message_text("متن پیامی که می‌خواهید برای **همه کاربران** ارسال شود را بفرستید:")
     return BROADCAST_MSG
 
 async def process_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,7 +228,10 @@ if __name__ == '__main__':
             REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_rem_admin)],
             BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_broadcast)]
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel)],
+        per_chat=True,
+        per_user=True,
+        per_message=False
     )
 
     app.add_handler(CommandHandler("start", start))
