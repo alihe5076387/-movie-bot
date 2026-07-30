@@ -32,7 +32,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!"
+    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
