@@ -8,7 +8,7 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, filters, ContextTypes
 )
 
-# ⚠️ آدی تلگرام خودت را به عنوان ادمین اصلی (Owner) اینجا بگذار
+# ⚠️ آیدی عددی تلگرام خودت به عنوان ادمین اصلی
 OWNER_ID = 7474010387
 TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
@@ -23,7 +23,7 @@ MOVIES_DB = {}
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- وب سرور ساختگی برای تایید Health Check در Render ---
+# --- وب سرور ساختگی برای Health Check رایگان Render ---
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -55,7 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=reply_markup)
 
-# --- پنل مدیریت ---
+# --- مدیریت کلیک روی دکمه‌ها ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
