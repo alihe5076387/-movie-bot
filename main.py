@@ -4,16 +4,24 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
-BOT_USERNAME = "YourBotUsername" # آیدی ربات بدون @
-CHANNEL_USERNAME = "YourChannelUsername" # آیدی کانال شما بدون @
+# ---------------- تنظیمات اصلی ----------------
+BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"  # توکنی که از BotFather گرفتی
+BOT_USERNAME = "Sbtikmove_bot"      # آیدی ربات بدون @
+CHANNEL_USERNAME = "YourChannelUsername"  # آیدی کانال شما بدون @
 
-# دیتابیس فیلم‌ها
+# فعال‌سازی لاگ‌ها برای عیب‌یابی راحت‌تر
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# ---------------- دیتابیس فیلم‌ها ----------------
 movies_db = {
     "Inception": {
         "info": "سال ساخت: 2010 | کارگردان: کریستوفر نولان",
         "trailer": None,
         "qualities": {
-            "1080p": "BAACAgIAAxkBAAI...", # file_id تلگرام
+            "1080p": "BAACAgIAAxkBAAI...",
             "720p": "BAACAgIAAxkBAAJ..."
         }
     }
@@ -42,18 +50,16 @@ async def show_force_join_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# ---------------- استارت ربات و دریافت لینک اختصاصی ----------------
+# ---------------- دستور /start ----------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     target_param = args[0] if args else "main"
 
-    # بررسی عضویت کانال
     if not await is_subscribed(context, user_id):
         await show_force_join_msg(update, context, target_param)
         return
 
-    # اگر کاربر عضو بود، هدایت مستقیم به فیلم
     if target_param.startswith("movie_"):
         movie_title = target_param.replace("movie_", "")
         await send_movie_page(update, context, movie_title)
@@ -76,7 +82,7 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.answer("❌ هنوز عضو کانال نشده‌اید!", show_alert=True)
 
-# ---------------- صفحه دانلود رایگان فیلم ----------------
+# ---------------- نمایش صفحه فیلم ----------------
 async def send_movie_page(update: Update, context: ContextTypes.DEFAULT_TYPE, movie_title: str):
     movie = movies_db.get(movie_title)
     if not movie:
@@ -102,8 +108,9 @@ async def send_movie_page(update: Update, context: ContextTypes.DEFAULT_TYPE, mo
     else:
         await update.message.reply_text(text=text, reply_markup=markup, parse_mode="Markdown")
 
+# ---------------- منوی اصلی ----------------
 async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "🎬 **به آرشیو رایگان فیلم خوش آمدید!**\nاز منوی زیر فیلم مورد نظرتون رو انتخاب کنید:"
+    text = "🎬 **به آرشیو رایگان فیلم خوش آمدید!**\nاز منوی زیر استفاده کنید:"
     keyboard = [[InlineKeyboardButton("📜 مشاهده لیست فیلم‌ها", callback_data="list_movies")]]
     
     query = update.callback_query
@@ -111,3 +118,15 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
         await update.message.reply_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ---------------- بخش اصلی اجرا (نقطه کلیدی) ----------------
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # ثبت دستورات
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join_"))
+
+    print("Bot is starting...")
+    # اجرای مداوم ربات
+    app.run_polling()
