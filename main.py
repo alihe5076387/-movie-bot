@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Dict, Any
 from flask import Flask
+from werkzeug.serving import run_simple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -26,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# 2. Dummy Web Server for Render Free Tier (Web Service)
+# 2. Web Server for Render Web Service (Fixing 404 Issue)
 # ------------------------------------------------------------------------------
 web_app = Flask(__name__)
 
@@ -35,8 +36,10 @@ def home():
     return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!", 200
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host="0.0.0.0", port=port)
+    # دریافت پورت واقعی Render (معمولاً 10000)
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Starting Flask Web Server on port {port}...")
+    run_simple('0.0.0.0', port, web_app)
 
 # ------------------------------------------------------------------------------
 # 3. Database Management (JSON Persistence)
@@ -58,7 +61,6 @@ def load_db():
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # تبدیل کلیدهای فیلم به int
             data["movies"] = {int(k): v for k, v in data.get("movies", {}).items()}
             return data
     except Exception as e:
@@ -109,7 +111,6 @@ async def check_channel_membership(user_id: int, context: ContextTypes.DEFAULT_T
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # بررسی جوین اجباری
     if not is_admin(user.id) and not await check_channel_membership(user.id, context):
         channel = DB["required_channel"]
         keyboard = [
@@ -205,7 +206,6 @@ async def show_movie_details(update: Update, context: ContextTypes.DEFAULT_TYPE)
     caption = f"🎬 **{movie['title']}**\n\n📝 **خلاصه داستان:**\n{movie['synopsis']}\n"
     keyboard = []
     
-    # دکمه‌های کیفیت با شناسه کوتاه
     q_buttons = []
     qualities = movie.get("qualities", {})
     for idx, q_name in enumerate(qualities.keys()):
@@ -216,7 +216,6 @@ async def show_movie_details(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if movie.get("teaser_file_id"):
         keyboard.append([InlineKeyboardButton("🎥 تماشای تیزر", callback_data=f"ts_{movie_id}")])
 
-    # دکمه حذف اختصاصی برای ادمین‌ها
     if is_admin(query.from_user.id):
         keyboard.append([InlineKeyboardButton("🗑 حذف این فیلم", callback_data=f"dmv_{movie_id}")])
 
@@ -480,11 +479,12 @@ async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 7. Main Function
 # ------------------------------------------------------------------------------
 def main():
+    # شروع وب‌سرور در یک Thread جداگانه
     threading.Thread(target=run_web_server, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation for Adding Movie
+    # Conversation Handlers
     movie_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_start_add, pattern="^admin_add_movie$")],
         states={
@@ -496,21 +496,19 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_flow)]
     )
 
-    # Conversation for Adding Admin
     admin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_admin, pattern="^admin_add_new$")],
         states={ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_admin_id)]},
         fallbacks=[CommandHandler("cancel", cancel_flow)]
     )
 
-    # Conversation for Setting Channel
     channel_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_set_channel, pattern="^admin_set_channel$")],
         states={SET_CHANNEL_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_username)]},
         fallbacks=[CommandHandler("cancel", cancel_flow)]
     )
 
-    # Handlers Registration
+    # Register Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(movie_conv)
     app.add_handler(admin_conv)
@@ -521,13 +519,11 @@ def main():
     app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
     app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
     
-    # دکمه‌های کوتاه شده برای نمایش فیلم، تیزر، دانلود و حذف
     app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
     app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
     app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
     app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
     
-    # Admin Handlers
     app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
     app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
@@ -535,7 +531,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
     app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
 
-    print("Bot is fully running with optimized Callback Data...")
+    print("Movie Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
