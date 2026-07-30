@@ -1,11 +1,8 @@
 import os
 import json
-import threading
 import logging
-import asyncio
 import re
-from typing import Dict, Any
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -27,10 +24,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------------------
-# 2. Database Management (JSON Persistence)
+# 2. Database & Config
 # ------------------------------------------------------------------------------
 DB_FILE = "bot_database.json"
 OWNER_ID = 7474010387  # آیدی عددی مالک اصلی
+BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
+RENDER_URL = "https://movie-bot-1-ulxj.onrender.com"  # آدرس اختصاصی رندر شما
 
 DEFAULT_DATA = {
     "admins": [OWNER_ID],
@@ -60,7 +59,6 @@ def save_db(data):
         logger.error(f"Error saving DB: {e}")
 
 DB = load_db()
-BOT_TOKEN = "8934125933:AAF2dD4FpUY_09YSUqoI3MPreHaaNB5g4bc"
 
 # Conversation States
 (
@@ -91,7 +89,7 @@ async def check_channel_membership(user_id: int, context: ContextTypes.DEFAULT_T
         return True
 
 # ------------------------------------------------------------------------------
-# 4. User Handlers
+# 4. Handlers
 # ------------------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -247,7 +245,7 @@ async def handle_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ خطا در ارسال فایل. دوباره تلاش کنید.")
 
 # ------------------------------------------------------------------------------
-# 5. Admin Panel Functions
+# 5. Admin Panel
 # ------------------------------------------------------------------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -457,76 +455,85 @@ async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ------------------------------------------------------------------------------
-# 6. Web Server & Async Telegram Bot Runner
+# 6. Telegram Application & Webhook Setup
+# ------------------------------------------------------------------------------
+bot_app = Application.builder().token(BOT_TOKEN).build()
+
+# Conversations
+movie_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(admin_start_add, pattern="^admin_add_movie$")],
+    states={
+        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_title)],
+        SYNOPSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_synopsis)],
+        TEASER: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_teaser)],
+        QUALITIES: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_qualities)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_flow)]
+)
+
+admin_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(start_add_admin, pattern="^admin_add_new$")],
+    states={ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_admin_id)]},
+    fallbacks=[CommandHandler("cancel", cancel_flow)]
+)
+
+channel_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(start_set_channel, pattern="^admin_set_channel$")],
+    states={SET_CHANNEL_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_username)]},
+    fallbacks=[CommandHandler("cancel", cancel_flow)]
+)
+
+bot_app.add_handler(CommandHandler("start", start_command))
+bot_app.add_handler(movie_conv)
+bot_app.add_handler(admin_conv)
+bot_app.add_handler(channel_conv)
+
+bot_app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
+bot_app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
+bot_app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
+bot_app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
+bot_app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
+bot_app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
+bot_app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
+bot_app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
+bot_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+bot_app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
+bot_app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
+bot_app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
+bot_app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
+bot_app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
+
+# ------------------------------------------------------------------------------
+# 7. Flask Server with Webhook Endpoint
 # ------------------------------------------------------------------------------
 app = Flask(__name__)
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def home():
-    return "Movie Bot Status: Alive and Running 24/7 on Render Web Service!", 200
+    return "Movie Bot Webhook Server Alive!", 200
 
-def run_telegram_bot():
-    """اجرای ربات تلگرام در یک Event Loop جداگانه در پس‌زمینه"""
-    loop = asyncio.new_event_policy().new_event_loop()
-    asyncio.set_event_loop(loop)
+@app.route('/telegram', methods=['POST'])
+async def telegram_webhook():
+    """دریافت پیام‌های تلگرام به صورت زنده از طریق Webhook"""
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        update = Update.de_json(data, bot_app.bot)
+        await bot_app.process_update(update)
+        return "OK", 200
 
-    bot_app = Application.builder().token(BOT_TOKEN).build()
-
-    # Conversation Handlers
-    movie_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_start_add, pattern="^admin_add_movie$")],
-        states={
-            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_title)],
-            SYNOPSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_synopsis)],
-            TEASER: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_teaser)],
-            QUALITIES: [MessageHandler(filters.VIDEO | filters.TEXT, admin_get_qualities)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel_flow)]
-    )
-
-    admin_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_add_admin, pattern="^admin_add_new$")],
-        states={ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_add_admin_id)]},
-        fallbacks=[CommandHandler("cancel", cancel_flow)]
-    )
-
-    channel_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_set_channel, pattern="^admin_set_channel$")],
-        states={SET_CHANNEL_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_username)]},
-        fallbacks=[CommandHandler("cancel", cancel_flow)]
-    )
-
-    # Handlers
-    bot_app.add_handler(CommandHandler("start", start_command))
-    bot_app.add_handler(movie_conv)
-    bot_app.add_handler(admin_conv)
-    bot_app.add_handler(channel_conv)
-
-    bot_app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
-    bot_app.add_handler(CallbackQueryHandler(list_movies, pattern="^list_movies$"))
-    bot_app.add_handler(CallbackQueryHandler(help_info, pattern="^help_info$"))
-    bot_app.add_handler(CallbackQueryHandler(start_command, pattern="^back_to_main$"))
-    
-    bot_app.add_handler(CallbackQueryHandler(show_movie_details, pattern="^mv_"))
-    bot_app.add_handler(CallbackQueryHandler(send_teaser, pattern="^ts_"))
-    bot_app.add_handler(CallbackQueryHandler(handle_download, pattern="^dl_"))
-    bot_app.add_handler(CallbackQueryHandler(admin_delete_movie_callback, pattern="^dmv_"))
-    
-    bot_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    bot_app.add_handler(CallbackQueryHandler(admin_delete_list, pattern="^admin_delete_list$"))
-    bot_app.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
-    bot_app.add_handler(CallbackQueryHandler(remove_admin_list, pattern="^admin_remove_select$"))
-    bot_app.add_handler(CallbackQueryHandler(handle_remove_admin, pattern="^deladmin_"))
-    bot_app.add_handler(CallbackQueryHandler(disable_channel_callback, pattern="^disable_channel$"))
-
-    logger.info("Initializing Telegram Bot Polling...")
-    bot_app.run_polling(close_loop=False)
-
-# ۱. ابتدا ربات تلگرام را در background روشن می‌کنیم
-t = threading.Thread(target=run_telegram_bot, daemon=True)
-t.start()
-
-# ۲. سپس سرور Flask اجرا می‌شود
 if __name__ == "__main__":
+    import asyncio
+    
+    async def init_webhook():
+        async with bot_app:
+            await bot_app.start()
+            webhook_url = f"{RENDER_URL}/telegram"
+            await bot_app.bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to: {webhook_url}")
+
+    # ساخت و تنظیم Webhook موقع استارت
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(init_webhook())
+
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)س
